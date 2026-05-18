@@ -20,7 +20,7 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.2", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -206,6 +206,236 @@ def build_deeper_conclusions(summary, profile, events, checkins):
 def pdf_safe(x):
     return str(x or "").replace("ő","ö").replace("Ő","Ö").replace("ű","ü").replace("Ű","Ü")
 
+
+def classify_week_type(day_summary: pd.DataFrame) -> Dict[str, str]:
+    """Heti összkép egyszerű, szülőbarát besorolással."""
+    if day_summary.empty:
+        return {"Típus": "Nincs elég adat", "Magyarázat": "Még nincs elég heti adat a besoroláshoz."}
+
+    avg_risk = day_summary["Kockázat"].mean()
+    max_risk = day_summary["Kockázat"].max()
+    std_risk = day_summary["Kockázat"].std() if len(day_summary) > 1 else 0
+    recovery_sum = day_summary.get("Recovery_órák", pd.Series(dtype=float)).sum()
+
+    ordered = day_summary.set_index("Nap").reindex(DAYS).reset_index()
+    ordered["Kockázat"] = ordered["Kockázat"].fillna(0)
+    second_half = ordered[ordered["Nap"].isin(["Csütörtök", "Péntek", "Szombat", "Vasárnap"])]["Kockázat"].mean()
+    first_half = ordered[ordered["Nap"].isin(["Hétfő", "Kedd", "Szerda"])]["Kockázat"].mean()
+
+    if max_risk >= 75 or avg_risk >= 55:
+        return {
+            "Típus": "Túlterhelt hét",
+            "Magyarázat": "A hét egészében vagy legalább egy napon magas idegrendszeri terhelés látszik."
+        }
+    if second_half > first_half + 15:
+        return {
+            "Típus": "Fáradó hét",
+            "Magyarázat": "A hét második felére emelkedik a terhelés, ami fokozatos kifáradásra utalhat."
+        }
+    if std_risk >= 20:
+        return {
+            "Típus": "Hullámzó hét",
+            "Magyarázat": "A napok terhelése nagyon eltérő. Ilyenkor nehéz lehet kiszámítható ritmust tartani."
+        }
+    if recovery_sum < 4:
+        return {
+            "Típus": "Recovery-hiányos hét",
+            "Magyarázat": "Kevés tervezett visszatöltő idő látszik a héten."
+        }
+    return {
+        "Típus": "Alapvetően stabil hét",
+        "Magyarázat": "A jelenlegi adatok alapján nincs erős túlterhelési minta."
+    }
+
+
+def _safe_mean(series):
+    try:
+        vals = pd.to_numeric(series, errors="coerce").dropna()
+        return vals.mean() if len(vals) else np.nan
+    except Exception:
+        return np.nan
+
+
+def build_neurodiverz_insight_engine(
+    day_summary: pd.DataFrame,
+    profile: Dict,
+    events_df: pd.DataFrame,
+    checkins_df: pd.DataFrame
+) -> Dict[str, pd.DataFrame]:
+    """Mélyebb, több rétegű insight motor AI nélkül."""
+    weekly_rows = []
+    day_rows = []
+    pattern_rows = []
+    positive_rows = []
+    micro_rows = []
+
+    if day_summary.empty:
+        empty = pd.DataFrame(columns=["Típus", "Megállapítás", "Miért fontos?", "Javaslat"])
+        return {
+            "heti_osszkep": empty,
+            "napi_fokusz": empty,
+            "mintazatok": empty,
+            "pozitiv_jelek": empty,
+            "mikro_javaslatok": empty,
+        }
+
+    week_type = classify_week_type(day_summary)
+    weekly_rows.append({
+        "Típus": week_type["Típus"],
+        "Megállapítás": week_type["Magyarázat"],
+        "Miért fontos?": "A heti ritmus sokszor fontosabb, mint egyetlen program önmagában.",
+        "Javaslat": "A cél nem minden terhelés megszüntetése, hanem a nehéz napok köré elég visszatöltő időt tenni."
+    })
+
+    ordered = day_summary.set_index("Nap").reindex(DAYS).reset_index()
+    ordered["Kockázat"] = pd.to_numeric(ordered["Kockázat"], errors="coerce").fillna(0)
+    ordered["Recovery_órák"] = pd.to_numeric(ordered.get("Recovery_órák", 0), errors="coerce").fillna(0)
+
+    # Több nap fókusz: top 3 nem csak legmagasabb
+    top_days = ordered[ordered["Kockázat"] > 0].sort_values("Kockázat", ascending=False).head(3)
+    for _, row in top_days.iterrows():
+        level = "Magas" if row["Kockázat"] >= 55 else ("Közepes" if row["Kockázat"] >= 35 else "Figyelendő")
+        day_rows.append({
+            "Nap": row["Nap"],
+            "Fókusz": f"{level} terhelés",
+            "Mit látunk?": f"{row['Nap']} kockázati pontja: {row['Kockázat']:.0f}.",
+            "Javaslat": "Ezen a napon érdemes előre jelezni a programokat, és legalább egy rövid lecsendesedési blokkot biztosítani."
+        })
+
+    # Hét második felének kifáradása
+    first = ordered[ordered["Nap"].isin(["Hétfő", "Kedd", "Szerda"])]["Kockázat"].mean()
+    second = ordered[ordered["Nap"].isin(["Csütörtök", "Péntek", "Szombat", "Vasárnap"])]["Kockázat"].mean()
+    if pd.notna(first) and pd.notna(second) and second > first + 12:
+        pattern_rows.append({
+            "Minta": "Hét második felére emelkedő terhelés",
+            "Mit látunk?": "A hét második fele nehezebbnek tűnik, mint az első.",
+            "Miért fontos?": "Sok neurodivergens gyereknél a hét végére csökken a tartalék, még akkor is, ha minden nap külön-külön kezelhetőnek tűnik.",
+            "Javaslat": "Csütörtök-péntek környékére érdemes könnyebb délutánt vagy több saját regenerációs időt hagyni."
+        })
+
+    # Recovery minta
+    low_rec_days = ordered[(ordered["Recovery_órák"] < 1) & (ordered["Kockázat"] > 25)]
+    if len(low_rec_days) >= 2:
+        pattern_rows.append({
+            "Minta": "Nehéz napok kevés recoveryvel",
+            "Mit látunk?": f"Több terheltebb napon kevés visszatöltő idő látszik: {', '.join(low_rec_days['Nap'].astype(str).tolist())}.",
+            "Miért fontos?": "A gond sokszor nem a program, hanem az, hogy utána nincs idegrendszeri lecsengés.",
+            "Javaslat": "A nehezebb programok után 20–40 perc elvárásmentes blokk sokat segíthet."
+        })
+
+    # Checkin alapú minták
+    if not checkins_df.empty:
+        c = checkins_df.copy()
+        # expected raw supabase columns
+        if "kutyuidoperc" in c.columns and "esti_allapot_pont" in c.columns:
+            high_screen = c[pd.to_numeric(c["kutyuidoperc"], errors="coerce").fillna(0) >= 45]
+            if len(high_screen) >= 1 and int(profile.get("screen_sensitivity", 3)) >= 3:
+                pattern_rows.append({
+                    "Minta": "Képernyőidő figyelendő",
+                    "Mit látunk?": "Volt magasabb képernyőidővel járó nap.",
+                    "Miért fontos?": "Egyes gyerekeknél a plusz képernyőidő nem aznap, hanem este vagy másnap jelentkezik terhelésként.",
+                    "Javaslat": "Érdemes 1–2 hétig tesztelni: kevesebb képernyő a nehezebb napokon, és figyelni az esti állapotot."
+                })
+
+        if "etkezes_pont" in c.columns:
+            meal_mean = _safe_mean(c["etkezes_pont"])
+            if pd.notna(meal_mean) and meal_mean >= 1.4:
+                pattern_rows.append({
+                    "Minta": "Étkezés mint korai jel",
+                    "Mit látunk?": "Több napon nem teljesen stabil az étkezés.",
+                    "Miért fontos?": "Az étkezés romlása sok családnál hamarabb jelez túlterhelést, mint a látványos kiborulás.",
+                    "Javaslat": "Nézzétek meg, hogy az étkezési eltérés együtt jár-e rosszabb alvással, fáradtsággal vagy képernyőigénnyel."
+                })
+
+        if "reggeli_allapot_pont" in c.columns and "esti_allapot_pont" in c.columns:
+            morning_avg = _safe_mean(c["reggeli_allapot_pont"])
+            evening_avg = _safe_mean(c["esti_allapot_pont"])
+            if pd.notna(morning_avg) and pd.notna(evening_avg) and evening_avg > morning_avg + 1:
+                pattern_rows.append({
+                    "Minta": "Nap közbeni lemerülés",
+                    "Mit látunk?": "Az esti állapot érezhetően rosszabb, mint a reggeli indulás.",
+                    "Miért fontos?": "Ez arra utalhat, hogy a nap közbeni elvárások, ingerek vagy átállások fokozatosan merítik a gyermeket.",
+                    "Javaslat": "Érdemes napközben is keresni mini visszatöltő pontokat, nem csak estére hagyni a lecsendesedést."
+                })
+
+        if "megnyugvast_segitette" in c.columns:
+            helped = []
+            for value in c["megnyugvast_segitette"].dropna().astype(str):
+                helped += [x.strip() for x in value.split(",") if x.strip()]
+            if helped:
+                top_help = pd.Series(helped).value_counts().index[0]
+                positive_rows.append({
+                    "Pozitív minta": "Van működő megnyugvási stratégia",
+                    "Mit látunk?": f"Ez többször is segítő tényezőként jelent meg: {top_help}.",
+                    "Miért jó jel?": "Nem csak a nehézséget látjuk, hanem azt is, mi segít visszaterelni a rendszert.",
+                    "Javaslat": "Ezt érdemes előre betervezni a nehezebb napok elé vagy után, nem csak utólag használni."
+                })
+
+        if "sajat_regeneracio_ido" in c.columns:
+            rec_avg = _safe_mean(c["sajat_regeneracio_ido"])
+            if pd.notna(rec_avg) and rec_avg >= 1.5:
+                positive_rows.append({
+                    "Pozitív minta": "Megjelent saját regenerációs idő",
+                    "Mit látunk?": "Több napon volt saját tempójú pihenés vagy szabad játék.",
+                    "Miért jó jel?": "A visszatöltő idő védőfaktor lehet a hét során.",
+                    "Javaslat": "Ezt érdemes tudatosan megtartani, még akkor is, ha látszólag 'nem történik semmi'."
+                })
+
+    # Program alapú minták
+    if not events_df.empty:
+        e = events_df.copy()
+        if "atallas_szam" in e.columns:
+            high_transition_events = e[pd.to_numeric(e["atallas_szam"], errors="coerce").fillna(0) >= 3]
+            if len(high_transition_events) >= 2 and int(profile.get("atallas", 3)) >= 3:
+                pattern_rows.append({
+                    "Minta": "Átállási terhelés",
+                    "Mit látunk?": "Több program körül sok átállás jelenik meg.",
+                    "Miért fontos?": "Az átállás sokszor láthatatlan terhelés: indulás, öltözés, érkezés, váltás, hazaérés.",
+                    "Javaslat": "A sok átállásos napokon segíthet a vizuális sorrend, fix indulási rutin és plusz idő."
+                })
+
+        if "kornyezeti_tenyezok" in e.columns:
+            crowded = e[e["kornyezeti_tenyezok"].fillna("").str.contains("Sok ember|Zsúfolt hely|Hangos hely", regex=True)]
+            if len(crowded) >= 2 and int(profile.get("sok_ember_zaj", 3)) >= 3:
+                pattern_rows.append({
+                    "Minta": "Ingergazdag környezetek halmozódása",
+                    "Mit látunk?": "Több zajos, zsúfolt vagy sok emberrel járó helyzet szerepel a héten.",
+                    "Miért fontos?": "Ezek önmagukban is merítőek lehetnek, de egymás után különösen leterhelők.",
+                    "Javaslat": "Ha nem lehet elkerülni, előtte/utána legyen kiszámítható, alacsony ingerű blokk."
+                })
+
+    # Mikro-javaslatok, mindig legyen néhány konkrét
+    if not day_rows:
+        micro_rows.append({
+            "Javaslat": "Tartsátok meg a jelenlegi ritmust",
+            "Mikor?": "A hét egészében",
+            "Hogyan?": "A meglévő nyugodt blokkok és előrejelzések megtartása most fontosabb lehet, mint új szabályok bevezetése."
+        })
+    else:
+        for row in day_rows[:3]:
+            micro_rows.append({
+                "Javaslat": f"{row['Nap']} könnyítése",
+                "Mikor?": row["Nap"],
+                "Hogyan?": "Egy plusz program elhagyása, rövidebb ott tartózkodás, vagy program után 20–30 perc elvárásmentes idő."
+            })
+
+    if len(positive_rows) == 0:
+        positive_rows.append({
+            "Pozitív minta": "Már maga a rögzítés is segítség",
+            "Mit látunk?": "A hét adatai alapján elkezdhető a mintázatok keresése.",
+            "Miért jó jel?": "Nem kell tökéletesen vezetni: néhány adatpont is segíthet a családnak kívülről ránézni a hétre.",
+            "Javaslat": "A következő héten elég napi 1 gyors check-inre törekedni."
+        })
+
+    return {
+        "heti_osszkep": pd.DataFrame(weekly_rows),
+        "napi_fokusz": pd.DataFrame(day_rows),
+        "mintazatok": pd.DataFrame(pattern_rows),
+        "pozitiv_jelek": pd.DataFrame(positive_rows),
+        "mikro_javaslatok": pd.DataFrame(micro_rows),
+    }
+
+
 def build_visual_pdf_report(profile, events, summary, insights, checkins, week_label):
     if SimpleDocTemplate is None: return None
     output=io.BytesIO()
@@ -261,7 +491,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.2</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -403,10 +633,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_2_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_2_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
