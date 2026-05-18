@@ -15,8 +15,8 @@ try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.graphics.shapes import Drawing, Rect, String
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    import matplotlib.pyplot as plt
 except Exception:
     SimpleDocTemplate = None
 
@@ -182,6 +182,56 @@ def engagement(checkins):
     if n>=1: return "👍 Jó kezdés: már egy check-in is hasznos."
     return "🧩 Kezdd egyetlen napi check-innel. Nem kell tökéletesen vezetni."
 
+
+def build_deeper_conclusions(summary, profile, events, checkins):
+    conclusions=[]
+    if summary.empty: return conclusions
+    hardest=summary.sort_values("Kockázat",ascending=False).iloc[0]
+    conclusions.append({"Cím":"A hét legnehezebb pontja","Következtetés":f"A legnagyobb terhelés most ezen a napon látszik: {hardest['Nap']}.","Javaslat":"Ha csak egy dolgon változtattok, először ezt a napot érdemes könnyíteni vagy több recoveryt tenni utána."})
+    if "Kütyüidő perc" in summary.columns and summary["Kütyüidő perc"].notna().sum()>=2 and int(profile.get("screen_sensitivity",3))>=3:
+        high=summary[summary["Kütyüidő perc"].fillna(0)>=45]
+        if len(high): conclusions.append({"Cím":"Képernyőidő mintázat","Következtetés":"Volt olyan nap, amikor magasabb képernyőidő jelent meg, és a profil alapján ez érzékeny terület lehet.","Javaslat":"Érdemes 1–2 hétig figyelni, hogy a plusz képernyőidő után romlik-e az esti állapot vagy a másnap."})
+    if "Étkezés pont" in summary.columns and summary["Étkezés pont"].fillna(0).max()>=2:
+        conclusions.append({"Cím":"Étkezési jelzés","Következtetés":"Az étkezésben látszik eltérés valamelyik napon. Ez sok neurodivergens gyereknél korai fáradási jel lehet.","Javaslat":"Érdemes figyelni, hogy az étkezési változás együtt jár-e fáradtsággal, ingerlékenységgel vagy több képernyőigénnyel."})
+    if summary["Recovery_órák"].sum()<4:
+        conclusions.append({"Cím":"Kevés visszatöltő idő","Következtetés":"A héten kevés tervezett nyugodt blokk látszik.","Javaslat":"Tegyél be legalább két rövidebb, védett lecsendesedési időt. A cél nem a programok törlése, hanem a hét fenntarthatóbbá tétele."})
+    if not checkins.empty and "megnyugvast_segitette" in checkins.columns:
+        helped=[]
+        for v in checkins["megnyugvast_segitette"].dropna().astype(str): helped += [x.strip() for x in v.split(",") if x.strip()]
+        if helped:
+            top=pd.Series(helped).value_counts().index[0]
+            conclusions.append({"Cím":"Ami működni látszik","Következtetés":f"A visszajelzések alapján ez többször megjelent segítő stratégiaként: {top}.","Javaslat":"Ezt érdemes tudatosan előre betervezni a nehezebb napok elé vagy után."})
+    return conclusions[:6]
+
+def pdf_safe(x):
+    return str(x or "").replace("ő","ö").replace("Ő","Ö").replace("ű","ü").replace("Ű","Ü")
+
+def build_visual_pdf_report(profile, events, summary, insights, checkins, week_label):
+    if SimpleDocTemplate is None: return None
+    output=io.BytesIO()
+    doc=SimpleDocTemplate(output,pagesize=A4,rightMargin=1.2*cm,leftMargin=1.2*cm,topMargin=1.1*cm,bottomMargin=1.1*cm)
+    styles=getSampleStyleSheet(); title=ParagraphStyle("t",parent=styles["Title"],fontSize=18,leading=22); h2=ParagraphStyle("h",parent=styles["Heading2"],fontSize=12,textColor=colors.HexColor("#1E3A8A")); body=ParagraphStyle("b",parent=styles["Normal"],fontSize=8.5,leading=11); small=ParagraphStyle("s",parent=styles["Normal"],fontSize=7.5,leading=9)
+    def P(v,style=body): return Paragraph(pdf_safe(v), style)
+    story=[P(f"Neurodiverz családi heti riport – {profile.get('nickname','Gyermek')}",title),P(f"Hét: {week_label} · Generálva: {datetime.now().strftime('%Y-%m-%d %H:%M')}",small),Spacer(1,.25*cm)]
+    if summary.empty:
+        story.append(P("Nincs elég adat a heti riporthoz.")); doc.build(story); return output.getvalue()
+    risk=clamp(summary["Kockázat"].sum()/330*100); stability=clamp(100-risk+summary["Recovery_órák"].sum()*2); maxday=summary.sort_values("Kockázat",ascending=False).iloc[0]; checkdays=checkins["day"].nunique() if not checkins.empty and "day" in checkins else 0
+    data=[[P("Heti stabilitás",small),P("Túlterhelési kockázat",small),P("Legnehezebb nap",small),P("Check-in napok",small)],[P(f"{stability}/100"),P(f"{risk}/100"),P(maxday["Nap"]),P(str(checkdays))]]
+    t=Table(data,colWidths=[4.2*cm]*4); t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#1E3A8A")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("BACKGROUND",(0,1),(-1,1),colors.HexColor("#EFF6FF")),("GRID",(0,0),(-1,-1),.3,colors.HexColor("#CBD5E1")),("VALIGN",(0,0),(-1,-1),"TOP")]))
+    story += [t,Spacer(1,.35*cm)]
+    # chart as PNG
+    fig,ax=plt.subplots(figsize=(7,2.6)); vals=summary["Kockázat"].fillna(0); labs=summary["Nap"]
+    ax.bar(labs, vals); ax.set_title("Napi idegrendszeri terhelés / kockázat"); ax.set_ylabel("pont"); ax.tick_params(axis='x', rotation=25); fig.tight_layout()
+    img=io.BytesIO(); fig.savefig(img,format='png',dpi=160); plt.close(fig); img.seek(0); story.append(Image(img,width=16*cm,height=5.8*cm)); story.append(Spacer(1,.3*cm))
+    story.append(P("Fő következtetések",h2))
+    for i,item in enumerate(build_deeper_conclusions(summary,profile,events,checkins)[:4],1):
+        story.append(P(f"{i}. {item['Cím']}",body)); story.append(P(f"Következtetés: {item['Következtetés']}",small)); story.append(P(f"Javaslat: {item['Javaslat']}",small)); story.append(Spacer(1,.12*cm))
+    story.append(P("Szülőbarát insightok",h2))
+    for _,r in insights.head(4).iterrows():
+        story.append(P(f"{r.get('Szint','')} – {r.get('Téma','')}",body)); story.append(P(f"Mit látunk? {r.get('Mit látunk?','')}",small)); story.append(P(f"Mit érdemes tenni? {r.get('Mit érdemes tenni?','')}",small)); story.append(Spacer(1,.1*cm))
+    story.append(P("Megjegyzés",h2)); story.append(P("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés, rutin, átállások, alvás/étkezés/képernyő és recovery tudatosabb tervezése.",small))
+    doc.build(story); return output.getvalue()
+
 def export_excel(profile, events, summary, insights, checkins):
     bio=io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as w:
@@ -232,12 +282,12 @@ with tab_profile:
         with c1:
             nickname=st.text_input("Gyermek neve / beceneve", value=row.get("nickname",""))
             age_group=st.selectbox("Életkor",["3–5 év","6–8 év","9–12 év","13+ év"])
-            sok_ember_zaj=st.slider("Sok ember / zaj mennyire terhelő?",1,5,int(row.get("sok_ember_zaj",4)))
-            screen_sensitivity=st.slider("Képernyőidő mennyire boríthatja a napot?",1,5,int(row.get("screen_sensitivity",3)))
+            sok_ember_zaj=st.slider("Sok ember / zaj mennyire terhelő?",1,5,int(row.get("sok_ember_zaj",4)), help="1 = alig zavarja, 5 = rövid ideig is erősen leterhelheti a zaj vagy sok ember.")
+            screen_sensitivity=st.slider("Képernyőidő mennyire boríthatja a napot?",1,5,int(row.get("screen_sensitivity",3)), help="1 = kevés hatás, 5 = kis plusz képernyőidő is megboríthatja az estét vagy a másnapot.")
         with c2:
-            atallas=st.slider("Átállások mennyire nehezek?",1,5,int(row.get("atallas",3)))
-            rutinvalidas=st.slider("Váratlan helyzet / rutinváltás mennyire nehéz?",1,5,int(row.get("rutinvalidas",4)))
-            utazas=st.slider("Utazás mennyire terhelő?",1,5,int(row.get("utazas",3)))
+            atallas=st.slider("Átállások mennyire nehezek?",1,5,int(row.get("atallas",3)), help="Átállás = elindulás, programváltás, hazaérkezés, egyik helyzetből a másikba lépés.")
+            rutinvalidas=st.slider("Váratlan helyzet / rutinváltás mennyire nehéz?",1,5,int(row.get("rutinvalidas",4)), help="Azt jelzi, mennyire nehéz, ha borul a megszokott napirend vagy előre nem jelzett dolog történik.")
+            utazas=st.slider("Utazás mennyire terhelő?",1,5,int(row.get("utazas",3)), help="Autó, busz, tömegközlekedés, várakozás, út közbeni ingerek összterhelése.")
             weather_sensitivity=st.slider("Front / időjárás érzékenység",1,5,int(row.get("weather_sensitivity",2)))
         with c3:
             tarsas_helyzet=st.slider("Társas helyzet mennyire merítő?",1,5,int(row.get("tarsas_helyzet",3)))
@@ -248,7 +298,7 @@ with tab_profile:
         health=st.multiselect("Állandó vagy gyakori társuló tényezők", HEALTH_OPTIONS, default=split_text(row.get("eu_tarsulo_tenyezok","")) or ["Nincs"])
         save=st.form_submit_button("Gyermekprofil mentése", use_container_width=True)
     if save:
-        payload={"nickname":nickname.strip() or "Gyermek","age_group":age_group,"sok_ember_zaj":sok_ember_zaj,"screen_sensitivity":screen_sensitivity,"atallas":atallas,"rutinvalidas":rutinvalidas,"utazas":utazas,"weather_sensitivity":weather_sensitivity,"tarsas_helyzet":tarsas_helyzet,"recovery_igeny":recovery_igeny,"alvas":alvas,"afternoon_sleep_need":afternoon_sleep_need,"segito_strategiak":", ".join(segito),"eu_tarsulo_tenyezok":", ".join(health)}
+        payload={"nickname":nickname.strip() or "Gyermek","age_group":age_group,"sok_ember_zaj":sok_ember_zaj,"screen_sensitivity":screen_sensitivity,"atallas":atallas,"rutinvalidas":rutinvalidas,"utazas":utazas,"weather_sensitivity":weather_sensitivity,"tarsas_helyzet":tarsas_helyzet,"recovery_igeny":recovery_igeny,"alvas":alvas,"afternoon_sleep_need":afternoon_sleep_need,"segito_strategiak":", ".join(segito),"sajat_megnyugtatas":sajat_megnyugtatas,"eu_tarsulo_tenyezok":", ".join(health)}
         try:
             if selected_child_id: sb.table("children").update(payload).eq("id",selected_child_id).execute()
             else: sb.table("children").insert(payload).execute()
@@ -273,9 +323,9 @@ with tab_plan:
         with c1:
             day=st.selectbox("Nap",DAYS); program_type=st.selectbox("Program típusa",list(PROGRAM_TYPES.keys()))
             add_workdays=st.checkbox("Ha óvoda / iskola: tegye be mind az 5 munkanapra")
-            duration=st.slider("Időtartam (óra)",0.5,8.0,1.0,step=0.5)
+            duration=st.slider("Időtartam (óra)",0.5,8.0,1.0,step=0.5, help="Mennyi ideig tart maga a program. A hosszabb program nagyobb terhelést adhat.")
         with c2:
-            travel=st.slider("Utazás összesen (perc)",0,120,0,step=5); transitions=st.slider("Átállások száma",0,6,1)
+            travel=st.slider("Utazás összesen (perc)",0,120,0,step=5, help="Oda-vissza együtt. Az utazás sok gyereknél külön terhelési tényező."); transitions=st.slider("Átállások száma",0,6,1, help="Hány váltás van a program körül: indulás, érkezés, öltözés, helyszínváltás, hazaérkezés.")
             predictability=st.selectbox("Kiszámíthatóság",["Kiszámítható","Részben kiszámítható","Váratlan / bizonytalan"])
         with c3:
             envs=st.multiselect("Környezeti tényezők",ENV_OPTIONS,default=["Ismerős hely"]); recovery=st.slider("Utána tervezett nyugodt blokk (óra)",0.0,5.0,0.5,step=0.5)
@@ -304,12 +354,12 @@ with tab_checkin:
         c1,c2,c3=st.columns(3)
         with c1:
             fb_day=st.selectbox("Nap",DAYS); morning=st.selectbox("Reggeli ébredés / indulás",list(MORNING_OPTIONS.keys()))
-            evening=st.selectbox("Esti állapot",list(FEEDBACK_OPTIONS.keys())); fatigue=st.slider("Napközbeni fáradtság",1,5,3)
+            evening=st.selectbox("Esti állapot",list(FEEDBACK_OPTIONS.keys())); fatigue=st.slider("Napközbeni fáradtság",1,5,3, help="1 = energikus, 5 = nagyon fáradt / alig bírta a napot.")
         with c2:
-            sleep=st.slider("Alvás minősége előző éjjel",1,5,3); meal=st.selectbox("Étkezés",list(MEAL_OPTIONS.keys()))
-            screen=st.slider("Kütyüidő / képernyőidő (perc)",0,180,30,step=10); weather=st.selectbox("Külső tényező",WEATHER_OPTIONS)
+            sleep=st.slider("Alvás minősége előző éjjel",1,5,3, help="1 = nagyon rossz, 5 = kifejezetten jó. A rossz alvás sokszor előjel."); meal=st.selectbox("Étkezés",list(MEAL_OPTIONS.keys()))
+            screen=st.slider("Kütyüidő / képernyőidő (perc)",0,180,30,step=10, help="Becsült képernyőidő. Nem minősítés, csak mintafigyelés."); weather=st.selectbox("Külső tényező",WEATHER_OPTIONS)
         with c3:
-            expectation=st.slider("Elvárásokkal töltött idő (óra)",0.0,10.0,4.0,step=0.5); own_rec=st.slider("Saját regenerációs idő / szabad játék (óra)",0.0,6.0,1.0,step=0.5)
+            expectation=st.slider("Elvárásokkal töltött idő (óra)",0.0,10.0,4.0,step=0.5, help="Olyan idő, amikor teljesíteni, alkalmazkodni, figyelni kellett: iskola, óvoda, fejlesztés, szabályozott program."); own_rec=st.slider("Saját regenerációs idő / szabad játék (óra)",0.0,6.0,1.0,step=0.5, help="Elvárásmentes, saját tempójú idő. Nem feltétlenül alvás.")
             challenge=st.selectbox("Kihívást jelentő helyzet",CHALLENGE_OPTIONS); settle=st.multiselect("Mi segített?",SETTLE_OPTIONS)
         helped_free=st.text_input("Mi segített még? (opcionális)", placeholder="pl. kedvenc zene, közös kuckózás")
         illness=st.multiselect("Időszakos eü. / állapot",HEALTH_OPTIONS,default=["Nincs"])
@@ -332,6 +382,9 @@ with tab_dash:
         for _,item in insights.iterrows():
             klass="red" if item["Szint"]=="KRITIKUS" else ("yellow" if item["Szint"]=="FIGYELMEZTETÉS" else "green")
             st.markdown(f"""<div class='card'><span class='pill {klass}'>{item['Szint']}</span><h3>{item['Téma']}</h3><b>Mit látunk?</b><br>{item['Mit látunk?']}<br><br><b>Mit érdemes tenni?</b><br>{item['Mit érdemes tenni?']}</div>""",unsafe_allow_html=True)
+        st.markdown("### Részletesebb heti következtetések")
+        for item in build_deeper_conclusions(summary,profile,events,checkins):
+            st.markdown(f"""<div class='card'><span class='pill blue'>KÖVETKEZTETÉS</span><h3>{item['Cím']}</h3><b>Következtetés</b><br>{item['Következtetés']}<br><br><b>Javaslat</b><br>{item['Javaslat']}</div>""",unsafe_allow_html=True)
         allc=load_all_checkins(sb,selected_child_id)
         if not allc.empty and allc["week_label"].nunique()>=2:
             trend=allc.groupby("week_label",as_index=False).agg(átlag_esti=("esti_allapot_pont","mean"), átlag_reggeli=("reggeli_allapot_pont","mean"), átlag_kütyüidő=("kutyuidoperc","mean"), checkin_napok=("day","nunique"))
@@ -350,5 +403,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v3_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
+        if pdf_bytes is not None:
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+        else:
+            st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
