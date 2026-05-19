@@ -20,7 +20,7 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.3.5.5.4.3", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.3.6.6.5.4.3", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -113,6 +113,53 @@ def load_events(sb, child_id, week): return df_from(sb.table("weekly_events").se
 def load_all_events(sb, child_id): return df_from(sb.table("weekly_events").select("*").eq("child_id", child_id).execute())
 def load_checkins(sb, child_id, week): return df_from(sb.table("daily_checkins").select("*").eq("child_id", child_id).eq("week_label", week).execute())
 def load_all_checkins(sb, child_id): return df_from(sb.table("daily_checkins").select("*").eq("child_id", child_id).execute())
+
+def safe_day_order_df(df: pd.DataFrame, day_col: str = "Nap") -> pd.DataFrame:
+    if df is None or df.empty or day_col not in df.columns:
+        return df
+    out = df.copy()
+    out["_nap_sorrend"] = out[day_col].map({d:i for i,d in enumerate(DAYS)}).fillna(99)
+    return out.sort_values("_nap_sorrend").drop(columns=["_nap_sorrend"])
+
+def collapse_checkins_by_day(checkins_df: pd.DataFrame) -> pd.DataFrame:
+    # Egy napra csak egy napi rekordot hagyunk az elemzéshez.
+    if checkins_df is None or checkins_df.empty or "day" not in checkins_df.columns:
+        return pd.DataFrame() if checkins_df is None else checkins_df
+    df = checkins_df.copy()
+    if "created_at" in df.columns:
+        df = df.sort_values("created_at")
+    numeric_cols = ["reggeli_allapot_pont","esti_allapot_pont","napkozbeni_faradsag","alvas_minosege","etkezes_pont","kutyuidoperc","elvaras_ido","sajat_regeneracio_ido"]
+    agg = {}
+    for c in df.columns:
+        if c == "day":
+            continue
+        agg[c] = "mean" if c in numeric_cols else "last"
+    return df.groupby("day", as_index=False).agg(agg)
+
+def delete_checkins_for_day(sb, child_id, week_label, day):
+    return sb.table("daily_checkins").delete().eq("child_id", child_id).eq("week_label", week_label).eq("day", day).execute()
+
+def save_single_checkin_for_day(sb, payload: Dict):
+    # Új szabály: egy naphoz egy aktív check-in. Mentéskor töröljük az aznapi régieket, majd beszúrjuk az újat.
+    delete_checkins_for_day(sb, payload["child_id"], payload["week_label"], payload["day"])
+    return sb.table("daily_checkins").insert(payload).execute()
+
+def cleanup_duplicate_checkins_current_week(sb, child_id, week_label) -> int:
+    df = load_checkins(sb, child_id, week_label)
+    if df is None or df.empty or "day" not in df.columns or "id" not in df.columns:
+        return 0
+    if "created_at" in df.columns:
+        df = df.sort_values("created_at", ascending=False)
+    deleted = 0
+    for day, grp in df.groupby("day"):
+        if len(grp) <= 1:
+            continue
+        # legfrissebb marad, többi törlődik
+        for _, row in grp.iloc[1:].iterrows():
+            sb.table("daily_checkins").delete().eq("id", row["id"]).execute()
+            deleted += 1
+    return deleted
+
 
 def split_text(x): return [p.strip() for p in str(x or "").split(",") if p.strip()]
 def weight(level): return 0.6 + (int(level)-1)*0.25
@@ -654,7 +701,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.3.5.5.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.3.6.6.5.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -742,7 +789,7 @@ with tab_plan:
 
 with tab_checkin:
     checkins=load_checkins(sb,selected_child_id,week_label)
-    st.subheader("Napi check-in"); st.success(engagement(checkins))
+    st.subheader("Napi check-in"); st.success(engagement(checkins)); st.info("Új szabály: egy naphoz egy aktív check-in tartozik. Ha ugyanarra a napra újra mentesz, az aznapi korábbi check-in felülíródik.")
     with st.form("checkin_form"):
         c1,c2,c3=st.columns(3)
         with c1:
@@ -765,9 +812,24 @@ with tab_checkin:
         illness=st.multiselect("Időszakos eü. / állapot",HEALTH_OPTIONS,default=["Nincs"])
         sub=st.form_submit_button("Check-in mentése felhőbe", use_container_width=True)
     if sub:
-        sb.table("daily_checkins").insert({"child_id":selected_child_id,"week_label":week_label,"day":fb_day,"reggeli_allapot":morning,"reggeli_allapot_pont":MORNING_OPTIONS[morning],"esti_allapot":evening,"esti_allapot_pont":FEEDBACK_OPTIONS[evening],"napkozbeni_faradsag":fatigue,"alvas_minosege":sleep,"etkezes":meal,"etkezes_pont":MEAL_OPTIONS[meal],"kutyuidoperc":screen,"kulso_tenyezo":weather,"elvaras_ido":expectation,"sajat_regeneracio_ido":own_rec,"kihivas_helyzet":f"{challenge} | Időszak: {challenge_time} | Kapcsolódás: {challenge_phase} | Helyzet: {challenge_location} | Kiváltó: {challenge_trigger} | Időtartam: {challenge_duration}","megnyugvast_segitette":", ".join(settle),"mi_segitett_szabad_szoveg":helped_free,"idoszakos_eu_allapot":", ".join(illness)}).execute()
+        save_single_checkin_for_day(sb, {"child_id":selected_child_id,"week_label":week_label,"day":fb_day,"reggeli_allapot":morning,"reggeli_allapot_pont":MORNING_OPTIONS[morning],"esti_allapot":evening,"esti_allapot_pont":FEEDBACK_OPTIONS[evening],"napkozbeni_faradsag":fatigue,"alvas_minosege":sleep,"etkezes":meal,"etkezes_pont":MEAL_OPTIONS[meal],"kutyuidoperc":screen,"kulso_tenyezo":weather,"elvaras_ido":expectation,"sajat_regeneracio_ido":own_rec,"kihivas_helyzet":f"{challenge} | Időszak: {challenge_time} | Kapcsolódás: {challenge_phase} | Helyzet: {challenge_location} | Kiváltó: {challenge_trigger} | Időtartam: {challenge_duration}","megnyugvast_segitette":", ".join(settle),"mi_segitett_szabad_szoveg":helped_free,"idoszakos_eu_allapot":", ".join(illness)})
         st.success("Check-in mentve."); st.rerun()
     st.dataframe(norm_checkins(checkins), use_container_width=True, hide_index=True)
+    if not checkins.empty:
+        st.markdown("#### Check-in kezelés")
+        days_with_checkin = sorted(checkins["day"].dropna().unique().tolist(), key=lambda x: DAYS.index(x) if x in DAYS else 99)
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            del_day = st.selectbox("Melyik nap check-injét töröljük?", days_with_checkin, key="delete_checkin_day_select")
+            if st.button("Kiválasztott nap check-injének törlése", use_container_width=True):
+                delete_checkins_for_day(sb, selected_child_id, week_label, del_day)
+                st.success(f"{del_day} check-in törölve.")
+                st.rerun()
+        with dc2:
+            if st.button("Duplikált check-inek tisztítása ezen a héten", use_container_width=True):
+                deleted_count = cleanup_duplicate_checkins_current_week(sb, selected_child_id, week_label)
+                st.success(f"Tisztítás kész. Törölt régi duplikátumok: {deleted_count}.")
+                st.rerun()
 
 with tab_dash:
     events=load_events(sb,selected_child_id,week_label); checkins=load_checkins(sb,selected_child_id,week_label)
@@ -813,10 +875,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_3_5_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_3_6_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_3_5_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_3_6_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
