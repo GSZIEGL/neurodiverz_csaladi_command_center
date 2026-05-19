@@ -20,7 +20,7 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.3.1.3", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.3.4.4.3", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -146,6 +146,7 @@ def norm_checkins(df):
     return df.rename(columns={"day":"Nap","reggeli_allapot":"Reggeli állapot","reggeli_allapot_pont":"Reggeli állapot pont","esti_allapot":"Esti állapot","esti_allapot_pont":"Esti állapot pont","napkozbeni_faradsag":"Napközbeni fáradtság","alvas_minosege":"Alvás minősége","etkezes":"Étkezés","etkezes_pont":"Étkezés pont","kutyuidoperc":"Kütyüidő perc","kulso_tenyezo":"Külső tényező","elvaras_ido":"Elvárásokkal töltött idő","sajat_regeneracio_ido":"Saját regenerációs idő","kihivas_helyzet":"Kihívást jelentő helyzet","megnyugvast_segitette":"Megnyugvást segítette","mi_segitett_szabad_szoveg":"Mi segített – saját","idoszakos_eu_allapot":"Időszakos eü. állapot"})
 
 def build_day_summary(events_df, checkins_df):
+    checkins_df = collapse_checkins_by_day(checkins_df)
     if events_df.empty: return pd.DataFrame()
     e = norm_events(events_df)
     s = e.groupby("Nap", as_index=False).agg(Programok=("program_típus","count"), Terhelés=("terhelési_pont","sum"), Átállások=("átállás_szám","sum"), Recovery_órák=("recovery_óra","sum"), Szülői_terhelés=("szülői_terhelés","sum"))
@@ -169,7 +170,7 @@ def generate_insights(day_summary, profile, events_df, checkins_df):
     if len(overload): out.append({"Szint":"FIGYELMEZTETÉS","Téma":"Túlterhelt napok","Mit látunk?":f"Magasabb idegrendszeri terhelés látszik: {', '.join(overload['Nap'])}.","Mit érdemes tenni?":"Kevesebb plusz program, több előrejelzés és több nyugodt blokk javasolt."})
     low_rec = day_summary[day_summary["Recovery_órák"]<1]
     if len(low_rec)>=3: out.append({"Szint":"FIGYELMEZTETÉS","Téma":"Kevés recovery","Mit látunk?":"Több napon kevés valódi lecsendesedési idő látszik.","Mit érdemes tenni?":"Tegyél be legalább 2–3 rövid, védett nyugalmi blokkot."})
-    ordered = day_summary.set_index("Nap").reindex(DAYS).fillna(0).reset_index()
+    ordered = safe_day_order_df(day_summary.groupby("Nap", as_index=False).agg(lambda x: x.mean() if pd.api.types.is_numeric_dtype(x) else x.iloc[-1])).fillna(0)
     streak=max_streak=0
     for high in (ordered["Kockázat"]>=45):
         streak = streak+1 if high else 0; max_streak=max(max_streak,streak)
@@ -222,7 +223,7 @@ def classify_week_type(day_summary: pd.DataFrame) -> Dict[str, str]:
     std_risk = day_summary["Kockázat"].std() if len(day_summary) > 1 else 0
     recovery_sum = day_summary.get("Recovery_órák", pd.Series(dtype=float)).sum()
 
-    ordered = day_summary.set_index("Nap").reindex(DAYS).reset_index()
+    ordered = safe_day_order_df(day_summary.groupby("Nap", as_index=False).agg(lambda x: x.mean() if pd.api.types.is_numeric_dtype(x) else x.iloc[-1])).fillna(0)
     ordered["Kockázat"] = ordered["Kockázat"].fillna(0)
     second_half = ordered[ordered["Nap"].isin(["Csütörtök", "Péntek", "Szombat", "Vasárnap"])]["Kockázat"].mean()
     first_half = ordered[ordered["Nap"].isin(["Hétfő", "Kedd", "Szerda"])]["Kockázat"].mean()
@@ -306,7 +307,7 @@ def build_prognosis_engine(day_summary: pd.DataFrame, profile: Dict, events_df: 
             "Megelőző lépés": "Kezdd napi 1 rövid check-innel."
         }])
 
-    ordered = day_summary.set_index("Nap").reindex(DAYS).reset_index()
+    ordered = safe_day_order_df(day_summary.groupby("Nap", as_index=False).agg(lambda x: x.mean() if pd.api.types.is_numeric_dtype(x) else x.iloc[-1])).fillna(0)
     ordered["Kockázat"] = pd.to_numeric(ordered["Kockázat"], errors="coerce").fillna(0)
     ordered["Recovery_órák"] = pd.to_numeric(ordered.get("Recovery_órák", 0), errors="coerce").fillna(0)
 
@@ -449,7 +450,7 @@ def build_neurodiverz_insight_engine(
         "Javaslat": "A cél nem minden terhelés megszüntetése, hanem a nehéz napok köré elég visszatöltő időt tenni."
     })
 
-    ordered = day_summary.set_index("Nap").reindex(DAYS).reset_index()
+    ordered = safe_day_order_df(day_summary.groupby("Nap", as_index=False).agg(lambda x: x.mean() if pd.api.types.is_numeric_dtype(x) else x.iloc[-1])).fillna(0)
     ordered["Kockázat"] = pd.to_numeric(ordered["Kockázat"], errors="coerce").fillna(0)
     ordered["Recovery_órák"] = pd.to_numeric(ordered.get("Recovery_órák", 0), errors="coerce").fillna(0)
 
@@ -653,7 +654,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.3.1.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.3.4.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -812,10 +813,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_3_1_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_3_4_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_3_1_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_3_4_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
