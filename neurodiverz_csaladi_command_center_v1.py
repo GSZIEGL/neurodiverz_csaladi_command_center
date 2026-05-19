@@ -20,7 +20,7 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.2", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.3.3", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -51,6 +51,11 @@ MORNING_OPTIONS = {"Jó / kipihent":0,"Kissé nehéz indulás":1,"Fáradt":2,"Ny
 MEAL_OPTIONS = {"Rendben evett":0,"Kicsit kevesebbet":1,"Válogatós / keveset":2,"Kimondottan problémás":3}
 WEATHER_OPTIONS = ["Nincs külön hatás","Front / időjárás érzékenység","Nagy meleg","Hideg / eső","Erős szél","Nem tudjuk"]
 CHALLENGE_OPTIONS = ["Nem volt","Ordítás / sírás","Verekedés / agresszió","Elvonulás / shutdown","Erős ellenállás","Iskolai/óvodai nehézség","Testvérkonfliktus","Alvás előtti kiborulás"]
+CHALLENGE_TIME_OPTIONS = ["Nem volt","Reggel","Délelőtt","Dél körül","Délután","Este","Lefekvés előtt","Éjszaka"]
+CHALLENGE_PHASE_OPTIONS = ["Nem volt","Program előtt","Program közben","Program után","Átálláskor / induláskor","Hazaérkezés után","Várakozás közben","Szabad játék közben","Étkezés körül","Alvás / lefekvés körül"]
+CHALLENGE_LOCATION_OPTIONS = ["Nem volt","Otthon","Udvar / játszótér","Óvoda / iskola","Fejlesztés / terápia","Sport","Bolt / ügyintézés","Utazás közben","Családi programon","Ismeretlen / nem egyértelmű"]
+CHALLENGE_TRIGGER_OPTIONS = ["Nem volt","Fáradtság","Éhség / szomjúság","Zaj / sok inger","Sok ember","Váratlan változás","Átállás / indulás","Várakozás","Túl hosszú program","Túl sok elvárás","Testvér / társas konfliktus","Veszteség / kudarc","Nem sikerült megnyugodni","Képernyő lezárása","Nem tudjuk"]
+CHALLENGE_DURATION_OPTIONS = ["Nem volt","0–5 perc","5–15 perc","15–30 perc","30–60 perc","60+ perc","Hullámzó / visszatérő"]
 SETTLE_OPTIONS = ["Nem kellett","Ölelés","Csendes szoba","Takaró alá bújás","Kedvenc zene","Mese / képernyő","Közös kuckózás","Mozgás","Tudatos légzés","Kedvenc tárgy"]
 HEALTH_OPTIONS = ["Nincs","Allergia","Megfázás / influenza","Hasfájás","Fejfájás","Gyógyszerváltás","ADHD tünetek erősebbek","Egyéb"]
 
@@ -254,6 +259,163 @@ def _safe_mean(series):
         return vals.mean() if len(vals) else np.nan
     except Exception:
         return np.nan
+
+
+
+def parse_challenge_details(value: object) -> Dict[str, str]:
+    """A régi és új 'kihivas_helyzet' mezőből is olvasható részletek."""
+    text = "" if value is None else str(value)
+    result = {
+        "alap": text.strip(),
+        "időszak": "",
+        "kapcsolódás": "",
+        "helyzet": "",
+        "kiváltó": "",
+        "időtartam": "",
+    }
+    if "|" not in text:
+        return result
+    parts = [p.strip() for p in text.split("|")]
+    result["alap"] = parts[0] if parts else ""
+    for p in parts[1:]:
+        if ":" in p:
+            k, v = p.split(":", 1)
+            k = k.strip().lower()
+            v = v.strip()
+            if "időszak" in k:
+                result["időszak"] = v
+            elif "kapcsolódás" in k:
+                result["kapcsolódás"] = v
+            elif "helyzet" in k:
+                result["helyzet"] = v
+            elif "kiváltó" in k:
+                result["kiváltó"] = v
+            elif "időtartam" in k:
+                result["időtartam"] = v
+    return result
+
+
+def build_prognosis_engine(day_summary: pd.DataFrame, profile: Dict, events_df: pd.DataFrame, checkins_df: pd.DataFrame) -> pd.DataFrame:
+    """Egyszerű, szabályalapú előrejelző réteg a következő napokra / hétre."""
+    rows = []
+    if day_summary.empty:
+        return pd.DataFrame([{
+            "Terület": "Nincs elég adat",
+            "Előrejelzés": "Adj hozzá programokat és néhány check-int, és a rendszer óvatos prognózist ad.",
+            "Mire figyelj?": "A prognózis nem diagnózis, csak tervezési segítség.",
+            "Megelőző lépés": "Kezdd napi 1 rövid check-innel."
+        }])
+
+    ordered = day_summary.set_index("Nap").reindex(DAYS).reset_index()
+    ordered["Kockázat"] = pd.to_numeric(ordered["Kockázat"], errors="coerce").fillna(0)
+    ordered["Recovery_órák"] = pd.to_numeric(ordered.get("Recovery_órák", 0), errors="coerce").fillna(0)
+
+    # Következő magas kockázatú napok
+    risk_days = ordered[ordered["Kockázat"] >= 45]
+    if not risk_days.empty:
+        rows.append({
+            "Terület": "Következő nehezebb napok",
+            "Előrejelzés": f"Ezek a napok előre terheltebbnek tűnnek: {', '.join(risk_days['Nap'].astype(str).tolist())}.",
+            "Mire figyelj?": "Ezeken a napokon könnyebben jöhet túlterhelés, főleg ha kevés a lecsendesedési idő.",
+            "Megelőző lépés": "Előre jelezd a nap menetét, és tervezz rövid, elvárásmentes blokkot a legterheltebb program után."
+        })
+
+    # Halmozódás / sorozat
+    streak = 0
+    max_streak = 0
+    for val in ordered["Kockázat"] >= 40:
+        streak = streak + 1 if val else 0
+        max_streak = max(max_streak, streak)
+    if max_streak >= 2:
+        rows.append({
+            "Terület": "Terhelés halmozódása",
+            "Előrejelzés": "Több egymást követő figyelendő nap látszik.",
+            "Mire figyelj?": "Ilyenkor nem mindig az első nehéz nap borít, hanem a második-harmadik.",
+            "Megelőző lépés": "A sorozat közepére tegyél egy alacsony ingerű délutánt vagy rövidebb programot."
+        })
+
+    # Hét végi kifáradás
+    first = ordered[ordered["Nap"].isin(["Hétfő","Kedd","Szerda"])]["Kockázat"].mean()
+    second = ordered[ordered["Nap"].isin(["Csütörtök","Péntek","Szombat","Vasárnap"])]["Kockázat"].mean()
+    if pd.notna(first) and pd.notna(second) and second > first + 10:
+        rows.append({
+            "Terület": "Hétvégi / hétvége előtti fáradás",
+            "Előrejelzés": "A hét második fele nehezebbnek tűnik.",
+            "Mire figyelj?": "A csütörtök-péntek körüli fáradás sokszor késleltetve jelenik meg.",
+            "Megelőző lépés": "Csütörtök után érdemes kevesebb új helyzetet és több kiszámítható rutint hagyni."
+        })
+
+    # Challenge részletek alapján trigger prognózis
+    if not checkins_df.empty and "kihivas_helyzet" in checkins_df.columns:
+        parsed = checkins_df["kihivas_helyzet"].dropna().apply(parse_challenge_details)
+        triggers = [x.get("kiváltó","") for x in parsed if x.get("kiváltó","") and x.get("kiváltó","") != "Nem volt"]
+        phases = [x.get("kapcsolódás","") for x in parsed if x.get("kapcsolódás","") and x.get("kapcsolódás","") != "Nem volt"]
+        times = [x.get("időszak","") for x in parsed if x.get("időszak","") and x.get("időszak","") != "Nem volt"]
+        if triggers:
+            top_trigger = pd.Series(triggers).value_counts().index[0]
+            rows.append({
+                "Terület": "Visszatérő kiváltó ok",
+                "Előrejelzés": f"A rögzített adatok alapján ez figyelendő trigger lehet: {top_trigger}.",
+                "Mire figyelj?": "Nem biztos, hogy ez az ok, de érdemes a következő hetekben külön megfigyelni.",
+                "Megelőző lépés": "Ha ez a trigger várható, előtte legyen rövid előrejelzés, utána pedig visszatöltő blokk."
+            })
+        if phases:
+            top_phase = pd.Series(phases).value_counts().index[0]
+            rows.append({
+                "Terület": "Mikor jelenik meg a nehézség?",
+                "Előrejelzés": f"A nehéz helyzetek gyakran ehhez kapcsolódhatnak: {top_phase}.",
+                "Mire figyelj?": "A program előtti, közbeni és utáni nehézség más-más megelőzést igényel.",
+                "Megelőző lépés": "A kapcsolódó időszakba tegyél több kiszámíthatóságot és kevesebb elvárást."
+            })
+        if times:
+            top_time = pd.Series(times).value_counts().index[0]
+            rows.append({
+                "Terület": "Napszakos érzékenység",
+                "Előrejelzés": f"A rögzített nehézségek gyakrabban ebben az időszakban jelentek meg: {top_time}.",
+                "Mire figyelj?": "Lehet, hogy a napszak önmagában is kapacitáscsökkenést jelez.",
+                "Megelőző lépés": "Ebben az időszakban érdemes kevesebb plusz döntést és átállást kérni."
+            })
+
+    # Screen prognózis
+    if not checkins_df.empty and "kutyuidoperc" in checkins_df.columns and int(profile.get("screen_sensitivity", 3)) >= 4:
+        avg_screen = pd.to_numeric(checkins_df["kutyuidoperc"], errors="coerce").dropna().mean()
+        if pd.notna(avg_screen) and avg_screen >= 45:
+            rows.append({
+                "Terület": "Képernyőérzékenység",
+                "Előrejelzés": "A profil és az adatok alapján a képernyőidő külön figyelendő.",
+                "Mire figyelj?": "A hatás nem mindig azonnali; lehet esti vagy másnapi feszültség.",
+                "Megelőző lépés": "Ne teljes tiltással kezdj, hanem tesztelj 1 héten át rövidebb vagy korábbi képernyőidőt."
+            })
+
+    if not rows:
+        rows.append({
+            "Terület": "Óvatos prognózis",
+            "Előrejelzés": "A jelenlegi adatok alapján nincs erős előrejelző jel.",
+            "Mire figyelj?": "Ez nem azt jelenti, hogy biztosan könnyű hét lesz, csak nincs még elég markáns minta.",
+            "Megelőző lépés": "Folytasd a rövid check-ineket; 2–3 hét után pontosabb lesz a rendszer."
+        })
+
+    return pd.DataFrame(rows[:8])
+
+
+def build_challenge_pattern_table(checkins_df: pd.DataFrame) -> pd.DataFrame:
+    """Kihívást jelentő helyzetek áttekintése strukturáltan."""
+    if checkins_df.empty or "kihivas_helyzet" not in checkins_df.columns:
+        return pd.DataFrame()
+    rows = []
+    for _, r in checkins_df.iterrows():
+        details = parse_challenge_details(r.get("kihivas_helyzet", ""))
+        if details.get("alap", "") and details.get("alap", "") != "Nem volt":
+            rows.append({
+                "Nap": r.get("day", ""),
+                "Helyzet": details.get("alap", ""),
+                "Időszak": details.get("időszak", ""),
+                "Kapcsolódás": details.get("kapcsolódás", ""),
+                "Helyszín": details.get("helyzet", ""),
+                "Kiváltó": details.get("kiváltó", ""),
+                "Időtartam": details.get("időtartam", ""),
+            })
+    return pd.DataFrame(rows)
 
 
 def build_neurodiverz_insight_engine(
@@ -491,7 +653,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.2</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.3.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -590,12 +752,21 @@ with tab_checkin:
             screen=st.slider("Kütyüidő / képernyőidő (perc)",0,180,30,step=10, help="Becsült képernyőidő. Nem minősítés, csak mintafigyelés."); weather=st.selectbox("Külső tényező",WEATHER_OPTIONS)
         with c3:
             expectation=st.slider("Elvárásokkal töltött idő (óra)",0.0,10.0,4.0,step=0.5, help="Olyan idő, amikor teljesíteni, alkalmazkodni, figyelni kellett: iskola, óvoda, fejlesztés, szabályozott program."); own_rec=st.slider("Saját regenerációs idő / szabad játék (óra)",0.0,6.0,1.0,step=0.5, help="Elvárásmentes, saját tempójú idő. Nem feltétlenül alvás.")
-            challenge=st.selectbox("Kihívást jelentő helyzet",CHALLENGE_OPTIONS); settle=st.multiselect("Mi segített?",SETTLE_OPTIONS)
+            challenge=st.selectbox("Kihívást jelentő helyzet",CHALLENGE_OPTIONS)
+            if challenge!="Nem volt":
+                challenge_time=st.selectbox("Mikor történt?",CHALLENGE_TIME_OPTIONS,index=4,help="A napszak segít felismerni, mikor fogy el gyakrabban a kapacitás.")
+                challenge_phase=st.selectbox("Mihez kapcsolódott?",CHALLENGE_PHASE_OPTIONS,index=2,help="Nem mindegy, hogy program előtt, közben, után vagy átálláskor jelent meg.")
+                challenge_location=st.selectbox("Hol történt?",CHALLENGE_LOCATION_OPTIONS,index=1)
+                challenge_trigger=st.selectbox("Fő kiváltó ok",CHALLENGE_TRIGGER_OPTIONS,index=13,help="Nem kell biztosnak lenni: elég a legvalószínűbb okot jelölni.")
+                challenge_duration=st.selectbox("Kb. meddig tartott?",CHALLENGE_DURATION_OPTIONS,index=2)
+            else:
+                challenge_time=challenge_phase=challenge_location=challenge_trigger=challenge_duration="Nem volt"
+            settle=st.multiselect("Mi segített?",SETTLE_OPTIONS)
         helped_free=st.text_input("Mi segített még? (opcionális)", placeholder="pl. kedvenc zene, közös kuckózás")
         illness=st.multiselect("Időszakos eü. / állapot",HEALTH_OPTIONS,default=["Nincs"])
         sub=st.form_submit_button("Check-in mentése felhőbe", use_container_width=True)
     if sub:
-        sb.table("daily_checkins").insert({"child_id":selected_child_id,"week_label":week_label,"day":fb_day,"reggeli_allapot":morning,"reggeli_allapot_pont":MORNING_OPTIONS[morning],"esti_allapot":evening,"esti_allapot_pont":FEEDBACK_OPTIONS[evening],"napkozbeni_faradsag":fatigue,"alvas_minosege":sleep,"etkezes":meal,"etkezes_pont":MEAL_OPTIONS[meal],"kutyuidoperc":screen,"kulso_tenyezo":weather,"elvaras_ido":expectation,"sajat_regeneracio_ido":own_rec,"kihivas_helyzet":challenge,"megnyugvast_segitette":", ".join(settle),"mi_segitett_szabad_szoveg":helped_free,"idoszakos_eu_allapot":", ".join(illness)}).execute()
+        sb.table("daily_checkins").insert({"child_id":selected_child_id,"week_label":week_label,"day":fb_day,"reggeli_allapot":morning,"reggeli_allapot_pont":MORNING_OPTIONS[morning],"esti_allapot":evening,"esti_allapot_pont":FEEDBACK_OPTIONS[evening],"napkozbeni_faradsag":fatigue,"alvas_minosege":sleep,"etkezes":meal,"etkezes_pont":MEAL_OPTIONS[meal],"kutyuidoperc":screen,"kulso_tenyezo":weather,"elvaras_ido":expectation,"sajat_regeneracio_ido":own_rec,"kihivas_helyzet":f"{challenge} | Időszak: {challenge_time} | Kapcsolódás: {challenge_phase} | Helyzet: {challenge_location} | Kiváltó: {challenge_trigger} | Időtartam: {challenge_duration}","megnyugvast_segitette":", ".join(settle),"mi_segitett_szabad_szoveg":helped_free,"idoszakos_eu_allapot":", ".join(illness)}).execute()
         st.success("Check-in mentve."); st.rerun()
     st.dataframe(norm_checkins(checkins), use_container_width=True, hide_index=True)
 
@@ -615,6 +786,16 @@ with tab_dash:
         st.markdown("### Részletesebb heti következtetések")
         for item in build_deeper_conclusions(summary,profile,events,checkins):
             st.markdown(f"""<div class='card'><span class='pill blue'>KÖVETKEZTETÉS</span><h3>{item['Cím']}</h3><b>Következtetés</b><br>{item['Következtetés']}<br><br><b>Javaslat</b><br>{item['Javaslat']}</div>""",unsafe_allow_html=True)
+
+        st.markdown("### Prognózis / mire figyeljetek előre?")
+        prognosis_df = build_prognosis_engine(summary, profile, events, checkins)
+        st.dataframe(prognosis_df, use_container_width=True, hide_index=True)
+
+        challenge_df = build_challenge_pattern_table(checkins)
+        if not challenge_df.empty:
+            st.markdown("### Kihívást jelentő helyzetek mintázatai")
+            st.dataframe(challenge_df, use_container_width=True, hide_index=True)
+
         allc=load_all_checkins(sb,selected_child_id)
         if not allc.empty and allc["week_label"].nunique()>=2:
             trend=allc.groupby("week_label",as_index=False).agg(átlag_esti=("esti_allapot_pont","mean"), átlag_reggeli=("reggeli_allapot_pont","mean"), átlag_kütyüidő=("kutyuidoperc","mean"), checkin_napok=("day","nunique"))
@@ -633,10 +814,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_2_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_3_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_2_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_3_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
