@@ -20,7 +20,7 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.1.1.6.5.4.3", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.2.1.6.5.4.3", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -701,7 +701,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.1.1.6.5.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.2.1.6.5.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -843,52 +843,101 @@ children=load_children(sb); profile=children[children["id"]==selected_child_id].
 
 with tab_plan:
     st.subheader("Heti programtervező")
-    all_events=load_all_events(sb,selected_child_id); prev=sorted([w for w in (all_events["week_label"].dropna().unique().tolist() if not all_events.empty else []) if w!=week_label])
+    st.caption("Gyorsított bevitel: óvoda/iskola 5 munkanapra, előző hét másolása, majd finomhangolás.")
+
+    all_events = load_all_events(sb, selected_child_id)
+    existing_weeks = sorted(all_events["week_label"].dropna().unique().tolist()) if not all_events.empty and "week_label" in all_events.columns else []
+    previous_candidates = [w for w in existing_weeks if w != week_label]
+
     with st.expander("Előző hét átemelése"):
-        if prev:
-            source=st.selectbox("Melyik hetet másoljuk?", prev, index=len(prev)-1)
+        if previous_candidates:
+            source_week = st.selectbox("Melyik hetet másoljuk?", previous_candidates, index=len(previous_candidates)-1)
             if st.button("Előző hét programjainak átemelése erre a hétre", use_container_width=True):
-                st.success(f"{copy_week(sb,selected_child_id,source,week_label)} program átmásolva."); st.rerun()
-        else: st.info("Még nincs korábbi hét.")
+                try:
+                    n = copy_previous_week(sb, selected_child_id, source_week, week_label)
+                    st.success(f"{n} program átmásolva. Most már csak finomhangolni kell.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Másolás sikertelen: {exc}")
+        else:
+            st.info("Még nincs korábbi hét, amit át lehetne emelni.")
+
     with st.form("program_form"):
-        c1,c2,c3=st.columns(3)
+        c1, c2, c3 = st.columns(3)
+
         with c1:
-            day=st.selectbox("Nap",DAYS); program_type=st.selectbox("Program típusa",list(PROGRAM_TYPES.keys()))
-            use_time_range=st.checkbox(
-                "A megadott kezdés/befejezés időpontot használja a naptárban",
+            day = st.selectbox("Nap", DAYS)
+            program_type = st.selectbox("Program típusa", list(PROGRAM_TYPES.keys()))
+            add_workdays = st.checkbox("Ha óvoda / iskola: tegye be mind az 5 munkanapra", value=False)
+            duration = st.slider("Időtartam (óra)", 0.5, 8.0, 1.0, step=0.5)
+
+        with c2:
+            travel = st.slider("Utazás összesen (perc)", 0, 120, 0, step=5)
+            transitions = st.slider("Átállások száma", 0, 6, 1)
+            predictability = st.selectbox("Kiszámíthatóság", ["Kiszámítható", "Részben kiszámítható", "Váratlan / bizonytalan"])
+
+        with c3:
+            envs = st.multiselect("Környezeti tényezők", ENV_OPTIONS, default=["Ismerős hely"])
+            recovery_hours = st.slider("Utána tervezett nyugodt blokk (óra)", 0.0, 5.0, 0.5, step=0.5)
+            parent_load = st.slider("Szülői szervezési terhelés", 1, 5, 2)
+
+        st.markdown("#### Időpont a strukturált naptárhoz")
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            use_time_range = st.checkbox(
+                "Használja az időpontot a naptárban",
                 value=True,
                 help="Ha kikapcsolod, a program időpont nélkül kerül a naptárba."
             )
-            start_time_program=st.time_input("Kezdés", value=time(8,0), key="program_start_time")
-            end_time_program=st.time_input("Befejezés", value=time(9,0), key="program_end_time")
-            if not use_time_range:
-                start_time_program=None
-                end_time_program=None
-            add_workdays=st.checkbox("Ha óvoda / iskola: tegye be mind az 5 munkanapra")
-            duration=st.slider("Időtartam (óra)",0.5,8.0,1.0,step=0.5, help="Mennyi ideig tart maga a program. A hosszabb program nagyobb terhelést adhat.")
-        with c2:
-            travel=st.slider("Utazás összesen (perc)",0,120,0,step=5, help="Oda-vissza együtt. Az utazás sok gyereknél külön terhelési tényező."); transitions=st.slider("Átállások száma",0,6,1, help="Hány váltás van a program körül: indulás, érkezés, öltözés, helyszínváltás, hazaérkezés.")
-            predictability=st.selectbox("Kiszámíthatóság",["Kiszámítható","Részben kiszámítható","Váratlan / bizonytalan"])
-        with c3:
-            envs=st.multiselect("Környezeti tényezők",ENV_OPTIONS,default=["Ismerős hely"]); recovery=st.slider("Utána tervezett nyugodt blokk (óra)",0.0,5.0,0.5,step=0.5)
-            parent_load=st.slider("Szülői szervezési terhelés",1,5,2)
-        submit=st.form_submit_button("Program mentése felhőbe", use_container_width=True)
-    if submit:
-        days=WORKDAYS if add_workdays and program_type=="Óvoda / iskola" else [day]
-        time_text=_event_time_text(start_time_program,end_time_program)
-        for d in days:
-            payload={"child_id":selected_child_id,"week_label":week_label,"day":d,"program_tipus":program_type,"idotartam_ora":duration,"utazas_perc":travel,"atallas_szam":transitions,"kiszamithatosag":predictability+time_text,"kornyezeti_tenyezok":", ".join(envs),"recovery_ora":recovery,"szuloi_terheles":parent_load}
-            payload["terhelesi_pont"]=calculate_event_load(payload,profile); sb.table("weekly_events").insert(payload).execute()
-        st.success(f"{len(days)} program mentve."); st.rerun()
-    events=load_events(sb,selected_child_id,week_label)
+        with t2:
+            start_time_program = st.time_input("Kezdés", value=time(8, 0), key="program_start_time")
+        with t3:
+            end_time_program = st.time_input("Befejezés", value=time(9, 0), key="program_end_time")
+
+        submitted = st.form_submit_button("Program mentése felhőbe", use_container_width=True)
+
+    if submitted:
+        days_to_insert = WORKDAYS if add_workdays and program_type == "Óvoda / iskola" else [day]
+        try:
+            time_text = ""
+            if use_time_range and start_time_program is not None and end_time_program is not None:
+                time_text = f" | Idő: {start_time_program.strftime('%H:%M')}-{end_time_program.strftime('%H:%M')}"
+
+            for d in days_to_insert:
+                event_payload = {
+                    "child_id": selected_child_id,
+                    "week_label": week_label,
+                    "day": d,
+                    "program_tipus": program_type,
+                    "idotartam_ora": duration,
+                    "utazas_perc": travel,
+                    "atallas_szam": transitions,
+                    "kiszamithatosag": predictability + time_text,
+                    "kornyezeti_tenyezok": ", ".join(envs),
+                    "recovery_ora": recovery_hours,
+                    "szuloi_terheles": parent_load,
+                }
+                event_payload["terhelesi_pont"] = calculate_event_load(event_payload, profile)
+                insert_event(sb, event_payload)
+
+            st.success(f"{len(days_to_insert)} program mentve.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Mentés sikertelen: {exc}")
+
+    events_df = load_events(sb, selected_child_id, week_label)
     st.markdown("### Heti programok")
-    st.dataframe(norm_events(events), use_container_width=True, hide_index=True)
-    if not events.empty:
+    if events_df.empty:
+        st.info("Még nincs program ezen a héten.")
+    else:
+        st.dataframe(normalize_events_df(events_df), use_container_width=True, hide_index=True)
+        delete_options = {f"{r['day']} · {r['program_tipus']} · {r['created_at']}": r["id"] for _, r in events_df.iterrows()}
         with st.expander("Program törlése"):
-            labels={f"{r['day']} · {r['program_tipus']} · {r['created_at']}":r["id"] for _,r in events.iterrows()}
-            lab=st.selectbox("Törlendő program",list(labels.keys()))
+            del_label = st.selectbox("Törlendő program", list(delete_options.keys()))
             if st.button("Kiválasztott program törlése"):
-                sb.table("weekly_events").delete().eq("id",labels[lab]).execute(); st.rerun()
+                delete_event(sb, delete_options[del_label])
+                st.success("Program törölve.")
+                st.rerun()
 
 
 with tab_calendar:
@@ -992,10 +1041,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_1_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_2_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_1_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_2_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
