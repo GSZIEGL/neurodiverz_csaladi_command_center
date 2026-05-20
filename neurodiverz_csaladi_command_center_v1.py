@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.6.1", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.6.1.1", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -765,6 +765,484 @@ def build_neurodiverz_insight_engine(
     }
 
 
+def build_safe_pdf_report(profile, events, summary, insights, checkins, week_label):
+    if SimpleDocTemplate is None: return None
+    output=io.BytesIO()
+    doc=SimpleDocTemplate(output,pagesize=A4,rightMargin=1.2*cm,leftMargin=1.2*cm,topMargin=1.1*cm,bottomMargin=1.1*cm)
+    styles=getSampleStyleSheet(); title=ParagraphStyle("t",parent=styles["Title"],fontSize=18,leading=22); h2=ParagraphStyle("h",parent=styles["Heading2"],fontSize=12,textColor=colors.HexColor("#1E3A8A")); body=ParagraphStyle("b",parent=styles["Normal"],fontSize=8.5,leading=11); small=ParagraphStyle("s",parent=styles["Normal"],fontSize=7.5,leading=9)
+    def P(v,style=body): return Paragraph(pdf_safe(v), style)
+    story=[P(f"Neurodiverz családi heti riport – {profile.get('nickname','Gyermek')}",title),P(f"Hét: {week_label} · Generálva: {datetime.now().strftime('%Y-%m-%d %H:%M')}",small),Spacer(1,.25*cm)]
+    if summary.empty:
+        story.append(P("Nincs elég adat a heti riporthoz.")); 
+    # Összes stabilitási következtetés exportálása
+    story.append(P("Összes stabilitási következtetés", h2))
+
+    try:
+        insights_df = pd.DataFrame(generate_insights(day_summary, profile, events_df, checkins_df))
+        if insights_df is not None and not insights_df.empty:
+            for _, row in insights_df.iterrows():
+                title = str(row.get("Téma", row.get("Terület", "Következtetés")))
+                text = str(row.get("Következtetés", row.get("Előrejelzés", "")))
+                action = str(row.get("Javaslat", row.get("Megelőző lépés", "")))
+
+                story.append(P(f"<b>{title}</b>", small))
+                if text:
+                    story.append(P(text, small))
+                if action:
+                    story.append(P(f"Javaslat: {action}", small))
+                story.append(Spacer(1, 0.08*cm))
+        else:
+            story.append(P("Még nincs elég adat részletes stabilitási következtetésekhez.", small))
+    except Exception as export_exc:
+        story.append(P(f"Export következtetés-hiba: {export_exc}", small))
+
+
+    doc.build(story); return output.getvalue()
+    risk=clamp(summary["Kockázat"].sum()/330*100); stability=clamp(100-risk+summary["Recovery_órák"].sum()*2); maxday=summary.sort_values("Kockázat",ascending=False).iloc[0]; checkdays=checkins["day"].nunique() if not checkins.empty and "day" in checkins else 0
+    data=[[P("Heti stabilitás",small),P("Túlterhelési kockázat",small),P("Legnehezebb nap",small),P("Check-in napok",small)],[P(f"{stability}/100"),P(f"{risk}/100"),P(maxday["Nap"]),P(str(checkdays))]]
+    t=Table(data,colWidths=[4.2*cm]*4); t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#1E3A8A")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("BACKGROUND",(0,1),(-1,1),colors.HexColor("#EFF6FF")),("GRID",(0,0),(-1,-1),.3,colors.HexColor("#CBD5E1")),("VALIGN",(0,0),(-1,-1),"TOP")]))
+    story += [t,Spacer(1,.35*cm)]
+    # chart as PNG
+    fig,ax=plt.subplots(figsize=(7,2.6)); vals=summary["Kockázat"].fillna(0); labs=summary["Nap"]
+    ax.bar(labs, vals); ax.set_title("Napi idegrendszeri terhelés / kockázat"); ax.set_ylabel("pont"); ax.tick_params(axis='x', rotation=25); fig.tight_layout()
+    img=io.BytesIO(); fig.savefig(img,format='png',dpi=160); plt.close(fig); img.seek(0); story.append(Image(img,width=16*cm,height=5.8*cm)); story.append(Spacer(1,.3*cm))
+    story.append(P("Fő következtetések",h2))
+    for i,item in enumerate(build_deeper_conclusions(summary,profile,events,checkins)[:4],1):
+        story.append(P(f"{i}. {item['Cím']}",body)); story.append(P(f"Következtetés: {item['Következtetés']}",small)); story.append(P(f"Javaslat: {item['Javaslat']}",small)); story.append(Spacer(1,.12*cm))
+    story.append(P("Szülőbarát insightok",h2))
+    for _,r in insights.head(4).iterrows():
+        story.append(P(f"{r.get('Szint','')} – {r.get('Téma','')}",body)); story.append(P(f"Mit látunk? {r.get('Mit látunk?','')}",small)); story.append(P(f"Mit érdemes tenni? {r.get('Mit érdemes tenni?','')}",small)); story.append(Spacer(1,.1*cm))
+    story.append(P("Megjegyzés",h2)); story.append(P("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés, rutin, átállások, alvás/étkezés/képernyő és recovery tudatosabb tervezése.",small))
+    doc.build(story); return output.getvalue()
+
+def export_excel(profile, events, summary, insights, checkins):
+    bio=io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as w:
+        pd.DataFrame([profile]).to_excel(w,index=False,sheet_name="Gyermekprofil")
+        norm_events(events).to_excel(w,index=False,sheet_name="Programok")
+        summary.to_excel(w,index=False,sheet_name="Napi összegzés")
+        insights.to_excel(w,index=False,sheet_name="Insightok")
+        norm_checkins(checkins).to_excel(w,index=False,sheet_name="Check-inek")
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+        for ws in w.book.worksheets:
+            for cell in ws[1]: cell.fill=PatternFill("solid",fgColor="1E3A8A"); cell.font=Font(color="FFFFFF",bold=True); cell.alignment=Alignment(wrap_text=True)
+            for i,col in enumerate(ws.columns,1):
+                ws.column_dimensions[get_column_letter(i)].width=26
+                for cell in col: cell.alignment=Alignment(wrap_text=True,vertical="top")
+    return bio.getvalue()
+
+def copy_week(sb, child_id, source_week, target_week):
+    src=load_events(sb,child_id,source_week); n=0
+    for _,r in src.iterrows():
+        payload={"child_id":child_id,"week_label":target_week,"day":r["day"],"program_tipus":r["program_tipus"],"idotartam_ora":float(r.get("idotartam_ora",1)),"utazas_perc":int(r.get("utazas_perc",0)),"atallas_szam":int(r.get("atallas_szam",1)),"kiszamithatosag":r.get("kiszamithatosag","Kiszámítható"),"kornyezeti_tenyezok":r.get("kornyezeti_tenyezok",""),"recovery_ora":float(r.get("recovery_ora",0)),"szuloi_terheles":int(r.get("szuloi_terheles",2)),"terhelesi_pont":float(r.get("terhelesi_pont",0))}
+        sb.table("weekly_events").insert(payload).execute(); n+=1
+    return n
+
+sb=get_sb(); user=login_required(sb)
+with st.sidebar:
+    st.write(f"Belépve: **{user['email']}**")
+    if st.button("Kijelentkezés", use_container_width=True): logout()
+
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.6.1.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+
+children=load_children(sb)
+with st.sidebar:
+    st.header("Gyermek kiválasztása")
+    if children.empty:
+        selected_child_id=None; st.info("Még nincs gyermekprofil.")
+    else:
+        opts=dict(zip(children["nickname"],children["id"])); name=st.selectbox("Gyermek",list(opts.keys())); selected_child_id=opts[name]
+    week_label=st.text_input("Hét azonosító", value=f"{date.today().isocalendar().year}-W{date.today().isocalendar().week:02d}")
+
+
+def _time_to_minutes(value):
+    try:
+        if not value:
+            return 9999
+        h, m = str(value).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 9999
+
+
+def _event_time_text(start_time_value, end_time_value):
+    if start_time_value is None or end_time_value is None:
+        return ""
+    try:
+        return f" | Idő: {start_time_value.strftime('%H:%M')}-{end_time_value.strftime('%H:%M')}"
+    except Exception:
+        return ""
+
+
+def _parse_event_time(row):
+    text = str(row.get("kiszamithatosag", row.get("kiszámíthatóság", "")) or "")
+    if "| Idő:" not in text:
+        return "", ""
+    try:
+        rng = text.split("| Idő:", 1)[1].split("|", 1)[0].strip()
+        if "-" in rng:
+            a, b = rng.split("-", 1)
+            return a.strip(), b.strip()
+    except Exception:
+        pass
+    return "", ""
+
+
+def _clean_predictability_safe(value):
+    text = str(value or "")
+    if "| Idő:" in text:
+        return text.split("| Idő:", 1)[0].strip()
+    return text
+
+
+def build_calendar_view(events_df):
+    if events_df is None or events_df.empty:
+        return pd.DataFrame(columns=["Nap", "Idő", "Program", "Kiszámíthatóság", "Környezeti tényezők", "Utazás", "Átállás", "Recovery"])
+
+    rows = []
+    for _, r in events_df.iterrows():
+        raw_pred = str(r.get("kiszamithatosag", r.get("kiszámíthatóság", "")) or "")
+        start_key = 9999
+        time_text = "nincs megadva"
+        if "| Idő:" in raw_pred:
+            try:
+                rng = raw_pred.split("| Idő:", 1)[1].split("|", 1)[0].strip()
+                time_text = rng.replace("-", "–")
+                start_raw = rng.split("-", 1)[0].strip()
+                h, m = start_raw.split(":")
+                start_key = int(h) * 60 + int(m)
+            except Exception:
+                time_text = "nincs megadva"
+
+        day = r.get("day", r.get("Nap", ""))
+        rows.append({
+            "Nap": day,
+            "Idő": time_text,
+            "Program": r.get("program_tipus", r.get("program_típus", "")),
+            "Kiszámíthatóság": raw_pred.split("| Idő:", 1)[0].strip(),
+            "Környezeti tényezők": r.get("kornyezeti_tenyezok", r.get("környezeti_tényezők", "")),
+            "Utazás": f"{r.get('utazas_perc', r.get('utazás_perc', 0))} perc",
+            "Átállás": r.get("atallas_szam", r.get("átállás_szám", 0)),
+            "Recovery": f"{r.get('recovery_ora', r.get('recovery_óra', 0))} óra",
+            "_day": DAYS.index(day) if day in DAYS else 99,
+            "_start": start_key,
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["_day", "_start"]).drop(columns=["_day", "_start"])
+
+
+def render_calendar_cards(calendar_df):
+    if calendar_df is None or calendar_df.empty:
+        st.info("Még nincs naptárba rendezhető program.")
+        return
+    for day in DAYS:
+        day_df = calendar_df[calendar_df["Nap"] == day]
+        if day_df.empty:
+            continue
+        st.markdown(f"#### {day}")
+        for _, r in day_df.iterrows():
+            st.markdown(
+                f"""
+                <div class="card">
+                    <span class="pill blue">{r['Idő']}</span>
+                    <h3>{r['Program']}</h3>
+                    <div class="small">
+                        <b>Kiszámíthatóság:</b> {r['Kiszámíthatóság']}<br>
+                        <b>Környezeti tényezők:</b> {r['Környezeti tényezők']}<br>
+                        <b>Utazás:</b> {r['Utazás']} · <b>Átállás:</b> {r['Átállás']} · <b>Recovery:</b> {r['Recovery']}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+
+tab_profile,tab_plan,tab_calendar,tab_checkin,tab_rewards,tab_dash,tab_history,tab_export=st.tabs(["1. Gyermekprofil","2. Heti programtervező","Strukturált naptár","3. Napi check-in","Jutalmazás","4. Stabilitási elemzés","5. Mentett adatok / history","6. Export"])
+
+with tab_profile:
+    st.subheader("Gyermekprofil")
+    row=children[children["id"]==selected_child_id].iloc[0].to_dict() if selected_child_id else {}
+    with st.form("child_form"):
+        c1,c2,c3=st.columns(3)
+        with c1:
+            nickname=st.text_input("Gyermek neve / beceneve", value=row.get("nickname",""))
+            age_group=st.selectbox("Életkor",["3–5 év","6–8 év","9–12 év","13+ év"])
+            sok_ember_zaj=st.slider("Sok ember / zaj mennyire terhelő?",1,5,int(row.get("sok_ember_zaj",4)), help="1 = alig zavarja, 5 = rövid ideig is erősen leterhelheti a zaj vagy sok ember.")
+            screen_sensitivity=st.slider("Képernyőidő mennyire boríthatja a napot?",1,5,int(row.get("screen_sensitivity",3)), help="1 = kevés hatás, 5 = kis plusz képernyőidő is megboríthatja az estét vagy a másnapot.")
+        with c2:
+            atallas=st.slider("Átállások mennyire nehezek?",1,5,int(row.get("atallas",3)), help="Átállás = elindulás, programváltás, hazaérkezés, egyik helyzetből a másikba lépés.")
+            rutinvalidas=st.slider("Váratlan helyzet / rutinváltás mennyire nehéz?",1,5,int(row.get("rutinvalidas",4)), help="Azt jelzi, mennyire nehéz, ha borul a megszokott napirend vagy előre nem jelzett dolog történik.")
+            utazas=st.slider("Utazás mennyire terhelő?",1,5,int(row.get("utazas",3)), help="Autó, busz, tömegközlekedés, várakozás, út közbeni ingerek összterhelése.")
+            weather_sensitivity=st.slider("Front / időjárás érzékenység",1,5,int(row.get("weather_sensitivity",2)))
+        with c3:
+            tarsas_helyzet=st.slider("Társas helyzet mennyire merítő?",1,5,int(row.get("tarsas_helyzet",3)))
+            recovery_igeny=st.slider("Lecsendesedési idő igénye",1,5,int(row.get("recovery_igeny",4)))
+            alvas=st.slider("Rossz alvás mennyire borítja a napot?",1,5,int(row.get("alvas",4)))
+            afternoon_sleep_need=st.slider("Délutáni pihenés / alvás igénye",1,5,int(row.get("afternoon_sleep_need",3)))
+        segito=st.multiselect("Megnyugvási stratégiák", SETTLE_OPTIONS+["Előre szólás","Fülvédő","Kevesebb beszéd"], default=split_text(row.get("segito_strategiak","")) or ["Csendes szoba","Előre szólás"])
+        health=st.multiselect("Állandó vagy gyakori társuló tényezők", HEALTH_OPTIONS, default=split_text(row.get("eu_tarsulo_tenyezok","")) or ["Nincs"])
+        save=st.form_submit_button("Gyermekprofil mentése", use_container_width=True)
+    if save:
+        payload={"nickname":nickname.strip() or "Gyermek","age_group":age_group,"sok_ember_zaj":sok_ember_zaj,"screen_sensitivity":screen_sensitivity,"atallas":atallas,"rutinvalidas":rutinvalidas,"utazas":utazas,"weather_sensitivity":weather_sensitivity,"tarsas_helyzet":tarsas_helyzet,"recovery_igeny":recovery_igeny,"alvas":alvas,"afternoon_sleep_need":afternoon_sleep_need,"segito_strategiak":", ".join(segito),"sajat_megnyugtatas":sajat_megnyugtatas,"eu_tarsulo_tenyezok":", ".join(health)}
+        try:
+            if selected_child_id: sb.table("children").update(payload).eq("id",selected_child_id).execute()
+            else: sb.table("children").insert(payload).execute()
+            st.success("Gyermekprofil mentve."); st.rerun()
+        except Exception as exc: st.error(f"Mentés sikertelen: {exc}")
+
+if not selected_child_id:
+    st.info("Először hozz létre egy gyermekprofilt."); st.stop()
+children=load_children(sb); profile=children[children["id"]==selected_child_id].iloc[0].to_dict()
+
+with tab_plan:
+    st.subheader("Heti programtervező")
+    st.caption("Gyorsított bevitel: óvoda/iskola 5 munkanapra, előző hét másolása, majd finomhangolás.")
+
+    all_events = load_all_events(sb, selected_child_id)
+    existing_weeks = sorted(all_events["week_label"].dropna().unique().tolist()) if not all_events.empty and "week_label" in all_events.columns else []
+    previous_candidates = [w for w in existing_weeks if w != week_label]
+
+    with st.expander("Előző hét átemelése"):
+        if previous_candidates:
+            source_week = st.selectbox("Melyik hetet másoljuk?", previous_candidates, index=len(previous_candidates)-1)
+            if st.button("Előző hét programjainak átemelése erre a hétre", use_container_width=True):
+                try:
+                    n = copy_previous_week(sb, selected_child_id, source_week, week_label)
+                    st.success(f"{n} program átmásolva. Most már csak finomhangolni kell.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Másolás sikertelen: {exc}")
+        else:
+            st.info("Még nincs korábbi hét, amit át lehetne emelni.")
+
+    with st.form("program_form"):
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            day = st.selectbox("Nap", DAYS)
+            program_type = st.selectbox("Program típusa", list(PROGRAM_TYPES.keys()))
+            add_workdays = st.checkbox("Ha óvoda / iskola: tegye be mind az 5 munkanapra", value=False)
+            duration = st.slider("Időtartam (óra)", 0.5, 8.0, 1.0, step=0.5)
+
+        with c2:
+            travel = st.slider("Utazás összesen (perc)", 0, 120, 0, step=5)
+            transitions = st.slider("Átállások száma", 0, 6, 1)
+            predictability = st.selectbox("Kiszámíthatóság", ["Kiszámítható", "Részben kiszámítható", "Váratlan / bizonytalan"])
+
+        with c3:
+            envs = st.multiselect("Környezeti tényezők", ENV_OPTIONS, default=["Ismerős hely"])
+            recovery_hours = st.slider("Utána tervezett nyugodt blokk (óra)", 0.0, 5.0, 0.5, step=0.5)
+            parent_load = st.slider("Szülői szervezési terhelés", 1, 5, 2)
+
+        st.markdown("#### Időpont a strukturált naptárhoz")
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            use_time_range = st.checkbox(
+                "Használja az időpontot a naptárban",
+                value=True,
+                help="Ha kikapcsolod, a program időpont nélkül kerül a naptárba."
+            )
+        with t2:
+            start_time_program = st.time_input("Kezdés", value=time(8, 0), key="program_start_time")
+        with t3:
+            end_time_program = st.time_input("Befejezés", value=time(9, 0), key="program_end_time")
+
+        submitted = st.form_submit_button("Program mentése felhőbe", use_container_width=True)
+
+    if submitted:
+        days_to_insert = WORKDAYS if add_workdays and program_type == "Óvoda / iskola" else [day]
+        try:
+            time_text = ""
+            if use_time_range and start_time_program is not None and end_time_program is not None:
+                time_text = f" | Idő: {start_time_program.strftime('%H:%M')}-{end_time_program.strftime('%H:%M')}"
+
+            for d in days_to_insert:
+                event_payload = {
+                    "child_id": selected_child_id,
+                    "week_label": week_label,
+                    "day": d,
+                    "program_tipus": program_type,
+                    "idotartam_ora": duration,
+                    "utazas_perc": travel,
+                    "atallas_szam": transitions,
+                    "kiszamithatosag": predictability + time_text,
+                    "kornyezeti_tenyezok": ", ".join(envs),
+                    "recovery_ora": recovery_hours,
+                    "szuloi_terheles": parent_load,
+                }
+                event_payload["terhelesi_pont"] = calculate_event_load(event_payload, profile)
+                insert_event(sb, event_payload)
+
+            st.success(f"{len(days_to_insert)} program mentve.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Mentés sikertelen: {exc}")
+
+    events_df = load_events(sb, selected_child_id, week_label)
+    st.markdown("### Heti programok")
+    if events_df.empty:
+        st.info("Még nincs program ezen a héten.")
+    else:
+        st.dataframe(normalize_events_df(events_df), use_container_width=True, hide_index=True)
+        delete_options = {f"{r['day']} · {r['program_tipus']} · {r['created_at']}": r["id"] for _, r in events_df.iterrows()}
+        with st.expander("Program törlése"):
+            del_label = st.selectbox("Törlendő program", list(delete_options.keys()))
+            if st.button("Kiválasztott program törlése"):
+                delete_event(sb, delete_options[del_label])
+                st.success("Program törölve.")
+                st.rerun()
+
+
+with tab_calendar:
+    st.subheader("Strukturált heti naptár")
+    st.caption("A felvitt programokból automatikusan rendezett heti naptár készül. Ha megadsz tól–ig időpontot, időrendben is sorba rendezi.")
+    events_for_calendar = load_events(sb, selected_child_id, week_label)
+    calendar_df = build_calendar_view(events_for_calendar)
+
+    st.markdown("### Táblázatos naptár")
+    st.dataframe(calendar_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Kártyás naptárnézet")
+    render_calendar_cards(calendar_df)
+
+
+with tab_checkin:
+    checkins=load_checkins(sb,selected_child_id,week_label)
+    st.subheader("Napi check-in"); st.success(engagement(checkins)); st.info("Új szabály: egy naphoz egy aktív check-in tartozik. Ha ugyanarra a napra újra mentesz, az aznapi korábbi check-in felülíródik.")
+    with st.form("checkin_form"):
+        c1,c2,c3=st.columns(3)
+        with c1:
+            fb_day=st.selectbox("Nap",DAYS); morning=st.selectbox("Reggeli ébredés / indulás",list(MORNING_OPTIONS.keys()))
+            evening=st.selectbox("Esti állapot",list(FEEDBACK_OPTIONS.keys())); fatigue=st.slider("Napközbeni fáradtság",1,5,3, help="1 = energikus, 5 = nagyon fáradt / alig bírta a napot.")
+        with c2:
+            sleep=st.slider("Alvás minősége előző éjjel",1,5,3, help="1 = nagyon rossz, 5 = kifejezetten jó. A rossz alvás sokszor előjel."); meal=st.selectbox("Étkezés",list(MEAL_OPTIONS.keys()))
+            screen=st.slider("Kütyüidő / képernyőidő (perc)",0,180,30,step=10, help="Becsült képernyőidő. Nem minősítés, csak mintafigyelés."); weather=st.selectbox("Külső tényező",WEATHER_OPTIONS)
+        with c3:
+            expectation=st.slider("Elvárásokkal töltött idő (óra)",0.0,10.0,4.0,step=0.5, help="Olyan idő, amikor teljesíteni, alkalmazkodni, figyelni kellett: iskola, óvoda, fejlesztés, szabályozott program."); own_rec=st.slider("Saját regenerációs idő / szabad játék (óra)",0.0,6.0,1.0,step=0.5, help="Elvárásmentes, saját tempójú idő. Nem feltétlenül alvás.")
+            challenge=st.selectbox("Kihívást jelentő helyzet",CHALLENGE_OPTIONS, help="Ha nem volt nehéz helyzet, hagyd 'Nem volt' értéken. A részletező mezők ilyenkor is maradhatnak 'Nem volt'-on.")
+            st.markdown("**Kihívást jelentő helyzet részletei**")
+            challenge_time=st.selectbox("Mikor történt?",CHALLENGE_TIME_OPTIONS,index=0,help="A napszak segít felismerni, mikor fogy el gyakrabban a kapacitás.")
+            challenge_phase=st.selectbox("Mihez kapcsolódott?",CHALLENGE_PHASE_OPTIONS,index=0,help="Nem mindegy, hogy program előtt, közben, után vagy átálláskor jelent meg.")
+            challenge_location=st.selectbox("Hol történt?",CHALLENGE_LOCATION_OPTIONS,index=0)
+            challenge_trigger=st.selectbox("Fő kiváltó ok",CHALLENGE_TRIGGER_OPTIONS,index=0,help="Nem kell biztosnak lenni: elég a legvalószínűbb okot jelölni.")
+            challenge_duration=st.selectbox("Kb. meddig tartott?",CHALLENGE_DURATION_OPTIONS,index=0)
+            settle=st.multiselect("Mi segített?",SETTLE_OPTIONS)
+        helped_free=st.text_input("Mi segített még? (opcionális)", placeholder="pl. kedvenc zene, közös kuckózás")
+        illness=st.multiselect("Időszakos eü. / állapot",HEALTH_OPTIONS,default=["Nincs"])
+        sub=st.form_submit_button("Check-in mentése felhőbe", use_container_width=True)
+    if sub:
+        save_single_checkin_for_day(sb, {"child_id":selected_child_id,"week_label":week_label,"day":fb_day,"reggeli_allapot":morning,"reggeli_allapot_pont":MORNING_OPTIONS[morning],"esti_allapot":evening,"esti_allapot_pont":FEEDBACK_OPTIONS[evening],"napkozbeni_faradsag":fatigue,"alvas_minosege":sleep,"etkezes":meal,"etkezes_pont":MEAL_OPTIONS[meal],"kutyuidoperc":screen,"kulso_tenyezo":weather,"elvaras_ido":expectation,"sajat_regeneracio_ido":own_rec,"kihivas_helyzet":f"{challenge} | Időszak: {challenge_time} | Kapcsolódás: {challenge_phase} | Helyzet: {challenge_location} | Kiváltó: {challenge_trigger} | Időtartam: {challenge_duration}","megnyugvast_segitette":", ".join(settle),"mi_segitett_szabad_szoveg":helped_free,"idoszakos_eu_allapot":", ".join(illness)})
+        st.success("Check-in mentve."); st.rerun()
+    st.dataframe(norm_checkins(checkins), use_container_width=True, hide_index=True)
+    if not checkins.empty:
+        st.markdown("#### Check-in kezelés")
+        days_with_checkin = sorted(checkins["day"].dropna().unique().tolist(), key=lambda x: DAYS.index(x) if x in DAYS else 99)
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            del_day = st.selectbox("Melyik nap check-injét töröljük?", days_with_checkin, key="delete_checkin_day_select")
+            if st.button("Kiválasztott nap check-injének törlése", use_container_width=True):
+                delete_checkins_for_day(sb, selected_child_id, week_label, del_day)
+                st.success(f"{del_day} check-in törölve.")
+                st.rerun()
+        with dc2:
+            if st.button("Duplikált check-inek tisztítása ezen a héten", use_container_width=True):
+                deleted_count = cleanup_duplicate_checkins_current_week(sb, selected_child_id, week_label)
+                st.success(f"Tisztítás kész. Törölt régi duplikátumok: {deleted_count}.")
+                st.rerun()
+
+
+with tab_rewards:
+    st.subheader("Jutalmazás és matricagyűjtés")
+    st.caption("A cél nem a tökéletes viselkedés, hanem hogy együtt figyeljük és jobban értsük a hetet.")
+
+    rewards_checkins = load_checkins(sb, selected_child_id, week_label)
+    points = calculate_reward_points(rewards_checkins)
+
+    st.metric("Összegyűjtött matricák", f"{points} / 7")
+    st.success(f"Szint: {reward_level(points)}")
+
+    cols = st.columns(7)
+    for i in range(7):
+        with cols[i]:
+            if i < points:
+                st.markdown("⭐")
+            else:
+                st.markdown("⬜")
+
+    st.markdown("### Választható jutalmak")
+
+    selected_rewards = st.multiselect(
+        "Mik motiválják most legjobban?",
+        REWARD_OPTIONS
+    )
+
+    custom_reward = st.text_input(
+        "Saját jutalom ötlet",
+        placeholder="pl. új matrica, kis Lego, közös fagyizás"
+    )
+
+    if points >= 3:
+        st.info("3 matrica után már érdemes egy kisebb jutalmat adni.")
+    if points >= 5:
+        st.success("5 matrica = erős hét. Jöhet egy nagyobb közös élmény.")
+    if points >= 7:
+        st.balloons()
+        st.success("Teljes hét végigkövetve! Ez hatalmas segítség a mintázatok felismerésében.")
+
+    if selected_rewards:
+        st.markdown("### Aktuális jutalomötletek")
+        for r in selected_rewards:
+            st.markdown(f"- {r}")
+
+    if custom_reward.strip():
+        st.markdown("### Saját jutalom")
+        st.markdown(f"- {custom_reward}")
+
+
+with tab_dash:
+    events=load_events(sb,selected_child_id,week_label); checkins=load_checkins(sb,selected_child_id,week_label)
+    summary=build_day_summary(events,checkins); insights=pd.DataFrame(generate_insights(summary,profile,events,checkins))
+    st.subheader("Heti stabilitási elemzés")
+    if summary.empty: st.info("Adj hozzá programokat.")
+    else:
+        risk=clamp(summary["Kockázat"].sum()/330*100); stability=clamp(100-risk+summary["Recovery_órák"].sum()*2); maxday=summary.sort_values("Kockázat",ascending=False).iloc[0]
+        c1,c2,c3,c4=st.columns(4); c1.metric("Heti stabilitás",f"{stability}/100",score_color(stability)); c2.metric("Túlterhelési kockázat",f"{risk}/100",score_color(risk,True)); c3.metric("Legnehezebb nap",str(maxday["Nap"]),f"{maxday['Kockázat']:.0f} pont"); c4.metric("Check-in napok", checkins["day"].nunique() if not checkins.empty else 0)
+        fig=px.bar(summary,x="Nap",y="Kockázat",color="Kockázat",title="Napi idegrendszeri terhelés / kockázat"); fig.update_layout(template="plotly_dark",xaxis_title="",yaxis_title="Kockázati pont"); st.plotly_chart(fig,use_container_width=True)
+        st.dataframe(summary,use_container_width=True,hide_index=True)
+        for _,item in insights.iterrows():
+            klass="red" if item["Szint"]=="KRITIKUS" else ("yellow" if item["Szint"]=="FIGYELMEZTETÉS" else "green")
+            st.markdown(f"""<div class='card'><span class='pill {klass}'>{item['Szint']}</span><h3>{item['Téma']}</h3><b>Mit látunk?</b><br>{item['Mit látunk?']}<br><br><b>Mit érdemes tenni?</b><br>{item['Mit érdemes tenni?']}</div>""",unsafe_allow_html=True)
+        st.markdown("### Részletesebb heti következtetések")
+        for item in build_deeper_conclusions(summary,profile,events,checkins):
+            st.markdown(f"""<div class='card'><span class='pill blue'>KÖVETKEZTETÉS</span><h3>{item['Cím']}</h3><b>Következtetés</b><br>{item['Következtetés']}<br><br><b>Javaslat</b><br>{item['Javaslat']}</div>""",unsafe_allow_html=True)
+
+        st.markdown("### Prognózis / mire figyeljetek előre?")
+        prognosis_df = build_prognosis_engine(summary, profile, events, checkins)
+        st.dataframe(prognosis_df, use_container_width=True, hide_index=True)
+
+        challenge_df = build_challenge_pattern_table(checkins)
+        if not challenge_df.empty:
+            st.markdown("### Kihívást jelentő helyzetek mintázatai")
+            st.dataframe(challenge_df, use_container_width=True, hide_index=True)
+
+        allc=load_all_checkins(sb,selected_child_id)
+        if not allc.empty and allc["week_label"].nunique()>=2:
+            trend=allc.groupby("week_label",as_index=False).agg(átlag_esti=("esti_allapot_pont","mean"), átlag_reggeli=("reggeli_allapot_pont","mean"), átlag_kütyüidő=("kutyuidoperc","mean"), checkin_napok=("day","nunique"))
+            st.markdown("### Többhetes mintázatok"); st.dataframe(trend,use_container_width=True,hide_index=True)
+            fig2=px.line(trend,x="week_label",y=["átlag_esti","átlag_reggeli"],markers=True,title="Állapot trend több héten"); fig2.update_layout(template="plotly_dark"); st.plotly_chart(fig2,use_container_width=True)
+
+with tab_history:
+    ae=load_all_events(sb,selected_child_id); ac=load_all_checkins(sb,selected_child_id)
+    st.subheader("Mentett adatok / history"); c1,c2,c3=st.columns(3); c1.metric("Mentett programok",len(ae)); c2.metric("Mentett check-inek",len(ac)); c3.metric("Hetek",len(set(list(ae.get("week_label",[]))+list(ac.get("week_label",[])))) if not ae.empty or not ac.empty else 0)
+    st.markdown("### Program history"); st.dataframe(norm_events(ae),use_container_width=True,hide_index=True)
+    st.markdown("### Check-in history"); st.dataframe(norm_checkins(ac),use_container_width=True,hide_index=True)
+
+
 
 def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label):
     """Szebb, vizuális PDF export a Stabilitási elemzés oldal logikájához igazítva."""
@@ -791,56 +1269,14 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "TitleClean",
-        parent=styles["Title"],
-        fontSize=18,
-        leading=22,
-        textColor=colors.HexColor("#0F172A"),
-        spaceAfter=6,
-    )
-    subtitle_style = ParagraphStyle(
-        "SubtitleClean",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=10,
-        textColor=colors.HexColor("#475569"),
-        spaceAfter=8,
-    )
-    h2_style = ParagraphStyle(
-        "H2Clean",
-        parent=styles["Heading2"],
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor("#1E3A8A"),
-        spaceBefore=8,
-        spaceAfter=5,
-    )
-    body_style = ParagraphStyle(
-        "BodyClean",
-        parent=styles["Normal"],
-        fontSize=8.2,
-        leading=10.3,
-        textColor=colors.HexColor("#0F172A"),
-    )
-    small_style = ParagraphStyle(
-        "SmallClean",
-        parent=styles["Normal"],
-        fontSize=7.2,
-        leading=9,
-        textColor=colors.HexColor("#334155"),
-    )
-    white_style = ParagraphStyle(
-        "WhiteClean",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=10,
-        textColor=colors.white,
-    )
+    title_style = ParagraphStyle("TitleClean", parent=styles["Title"], fontSize=17, leading=21, textColor=colors.HexColor("#0F172A"))
+    h2_style = ParagraphStyle("H2Clean", parent=styles["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#1E3A8A"), spaceBefore=8, spaceAfter=5)
+    body_style = ParagraphStyle("BodyClean", parent=styles["Normal"], fontSize=8.2, leading=10.3, textColor=colors.HexColor("#0F172A"))
+    small_style = ParagraphStyle("SmallClean", parent=styles["Normal"], fontSize=7.2, leading=9, textColor=colors.HexColor("#334155"))
+    white_style = ParagraphStyle("WhiteClean", parent=styles["Normal"], fontSize=8.2, leading=10.5, textColor=colors.white)
 
     def safe_text(x):
         text = str(x or "")
-        # ReportLab alapfont miatt a hosszú ékezetek egyszerűsítése
         return text.replace("ő", "ö").replace("Ő", "Ö").replace("ű", "ü").replace("Ű", "Ü")
 
     def P(x, style=body_style):
@@ -849,17 +1285,12 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
     story = []
     child_name = profile.get("nickname") or profile.get("gyermek_neve") or "Gyermek"
 
-    # Fejléc
     header = Table(
-        [[
-            P(f"Neurodiverz családi heti riport", white_style),
-            P(f"{safe_text(child_name)} · {safe_text(week_label)}", white_style),
-        ]],
+        [[P("Neurodiverz családi heti riport", white_style), P(f"{child_name} · {week_label}", white_style)]],
         colWidths=[10.5*cm, 6.2*cm],
     )
     header.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#1E3A8A")),
-        ("BOX", (0,0), (-1,-1), 0, colors.HexColor("#1E3A8A")),
         ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
         ("LEFTPADDING", (0,0), (-1,-1), 9),
         ("RIGHTPADDING", (0,0), (-1,-1), 9),
@@ -868,14 +1299,13 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
     ]))
     story.append(header)
     story.append(Spacer(1, 0.25*cm))
-    story.append(P("A riport célja: átláthatóvá tenni a hét terhelését, visszatöltő idejét, mintázatait és a következő hétre vihető apró lépéseket.", subtitle_style))
+    story.append(P("A riport célja: átláthatóvá tenni a hét terhelését, visszatöltő idejét, mintázatait és a következő hétre vihető apró lépéseket.", small_style))
 
     if day_summary.empty:
         story.append(P("Nincs elég adat a heti riporthoz.", body_style))
         doc.build(story)
         return output.getvalue()
 
-    # Score-ok
     weekly_risk_raw = day_summary["Kockázat"].sum() if "Kockázat" in day_summary.columns else 0
     overload_risk = clamp(weekly_risk_raw / 330 * 100)
     recovery_sum = day_summary["Recovery_órák"].sum() if "Recovery_órák" in day_summary.columns else 0
@@ -890,12 +1320,11 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
             if value >= 50:
                 return colors.HexColor("#FEF3C7")
             return colors.HexColor("#DCFCE7")
-        else:
-            if value >= 75:
-                return colors.HexColor("#DCFCE7")
-            if value >= 50:
-                return colors.HexColor("#FEF3C7")
-            return colors.HexColor("#FEE2E2")
+        if value >= 75:
+            return colors.HexColor("#DCFCE7")
+        if value >= 50:
+            return colors.HexColor("#FEF3C7")
+        return colors.HexColor("#FEE2E2")
 
     score_data = [
         [P("Heti stabilitás", small_style), P("Túlterhelési kockázat", small_style), P("Legnehezebb nap", small_style), P("Check-in napok", small_style)],
@@ -916,7 +1345,6 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
     story.append(score_table)
     story.append(Spacer(1, 0.3*cm))
 
-    # Heti terhelésdiagram
     try:
         story.append(P("Heti terhelésdiagram", h2_style))
         story.append(_make_weekly_bar_drawing(day_summary, width=500, height=175))
@@ -952,17 +1380,14 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
             story.append(card)
             story.append(Spacer(1, 0.12*cm))
 
-    # Alap insightok
     add_cards("Szülőbarát insightok", insights_df, max_rows=6, accent="#2563EB")
 
-    # Mélyebb következtetések
     try:
         deeper_df = pd.DataFrame(build_deeper_conclusions(day_summary, profile, events_df, checkins_df))
         add_cards("Részletesebb heti következtetések", deeper_df, max_rows=6, accent="#7C3AED")
     except Exception as exc:
         story.append(P(f"Részletesebb következtetések nem készültek el: {exc}", small_style))
 
-    # Insight engine
     try:
         pack = build_neurodiverz_insight_engine(day_summary, profile, events_df, checkins_df)
         add_cards("Heti összkép", pack.get("heti_osszkep", pd.DataFrame()), max_rows=4, accent="#0F766E")
@@ -973,21 +1398,18 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
     except Exception as exc:
         story.append(P(f"Insight engine blokk nem készült el: {exc}", small_style))
 
-    # Prognózis
     try:
         prognosis_df = build_prognosis_engine(day_summary, profile, events_df, checkins_df)
         add_cards("Prognózis / mire figyeljetek előre?", prognosis_df, max_rows=6, accent="#B45309")
     except Exception as exc:
         story.append(P(f"Prognózis nem készült el: {exc}", small_style))
 
-    # Kihívást jelentő helyzetek
     try:
         challenge_df = build_challenge_pattern_table(checkins_df)
         add_cards("Kihívást jelentő helyzetek mintázata", challenge_df, max_rows=6, accent="#BE123C")
     except Exception as exc:
         story.append(P(f"Kihívást jelentő helyzetek blokk nem készült el: {exc}", small_style))
 
-    # Jutalmazás
     try:
         points = calculate_reward_points(checkins_df)
         reward_df = pd.DataFrame([{
