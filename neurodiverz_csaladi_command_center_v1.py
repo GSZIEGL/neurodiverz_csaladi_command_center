@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from datetime import date, datetime, time
+from datetime import date, datetime, time, time
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.4", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.5", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -213,6 +213,67 @@ def norm_events(df):
 def norm_checkins(df):
     if df.empty: return df
     return df.rename(columns={"day":"Nap","reggeli_allapot":"Reggeli állapot","reggeli_allapot_pont":"Reggeli állapot pont","esti_allapot":"Esti állapot","esti_allapot_pont":"Esti állapot pont","napkozbeni_faradsag":"Napközbeni fáradtság","alvas_minosege":"Alvás minősége","etkezes":"Étkezés","etkezes_pont":"Étkezés pont","kutyuidoperc":"Kütyüidő perc","kulso_tenyezo":"Külső tényező","elvaras_ido":"Elvárásokkal töltött idő","sajat_regeneracio_ido":"Saját regenerációs idő","kihivas_helyzet":"Kihívást jelentő helyzet","megnyugvast_segitette":"Megnyugvást segítette","mi_segitett_szabad_szoveg":"Mi segített – saját","idoszakos_eu_allapot":"Időszakos eü. állapot"})
+
+def normalize_events_df(events_df: pd.DataFrame) -> pd.DataFrame:
+    """Supabase eseményadatok magyar, biztonságos megjelenítése.
+    Kezeli a régi, időpont nélküli sorokat is.
+    """
+    if events_df is None or events_df.empty:
+        return pd.DataFrame()
+
+    rename = {
+        "program_tipus": "program_típus",
+        "idotartam_ora": "időtartam_óra",
+        "utazas_perc": "utazás_perc",
+        "atallas_szam": "átállás_szám",
+        "kiszamithatosag": "kiszámíthatóság",
+        "kornyezeti_tenyezok": "környezeti_tényezők",
+        "recovery_ora": "recovery_óra",
+        "szuloi_terheles": "szülői_terhelés",
+        "terhelesi_pont": "terhelési_pont",
+        "day": "Nap",
+    }
+
+    out = events_df.rename(columns=rename).copy()
+
+    def _clean_local(value):
+        text = str(value or "")
+        if "| Idő:" in text:
+            return text.split("| Idő:", 1)[0].strip()
+        return text
+
+    def _parse_time_local(value):
+        text = str(value or "")
+        if "| Idő:" not in text:
+            return "nincs megadva"
+        try:
+            rng = text.split("| Idő:", 1)[1].split("|", 1)[0].strip()
+            return rng.replace("-", "–")
+        except Exception:
+            return "nincs megadva"
+
+    # Időpont oszlop a naptárhoz / táblához
+    if "kiszámíthatóság" in out.columns:
+        out["Idő"] = out["kiszámíthatóság"].apply(_parse_time_local)
+        out["kiszámíthatóság"] = out["kiszámíthatóság"].apply(_clean_local)
+    else:
+        out["Idő"] = "nincs megadva"
+
+    # Nap szerinti rendezés, ha van Nap oszlop
+    if "Nap" in out.columns:
+        out["_nap_sorrend"] = out["Nap"].map({d: i for i, d in enumerate(DAYS)})
+        out = out.sort_values(["_nap_sorrend"]).drop(columns=["_nap_sorrend"])
+
+    # A legfontosabb oszlopokat előre tesszük, a többi maradhat mögötte
+    preferred = [
+        "Nap", "Idő", "program_típus", "időtartam_óra", "utazás_perc",
+        "átállás_szám", "kiszámíthatóság", "környezeti_tényezők",
+        "recovery_óra", "szülői_terhelés", "terhelési_pont"
+    ]
+    ordered_cols = [c for c in preferred if c in out.columns] + [c for c in out.columns if c not in preferred]
+    return out[ordered_cols]
+
+
 
 def build_day_summary(events_df, checkins_df):
     checkins_df = collapse_checkins_by_day(checkins_df)
@@ -723,7 +784,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.4</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.5</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -778,24 +839,39 @@ def _clean_predictability_safe(value):
 def build_calendar_view(events_df):
     if events_df is None or events_df.empty:
         return pd.DataFrame(columns=["Nap", "Idő", "Program", "Kiszámíthatóság", "Környezeti tényezők", "Utazás", "Átállás", "Recovery"])
-    e = events_df.copy()
+
     rows = []
-    for _, r in e.iterrows():
-        start, end = _parse_event_time(r)
+    for _, r in events_df.iterrows():
+        raw_pred = str(r.get("kiszamithatosag", r.get("kiszámíthatóság", "")) or "")
+        start_key = 9999
+        time_text = "nincs megadva"
+        if "| Idő:" in raw_pred:
+            try:
+                rng = raw_pred.split("| Idő:", 1)[1].split("|", 1)[0].strip()
+                time_text = rng.replace("-", "–")
+                start_raw = rng.split("-", 1)[0].strip()
+                h, m = start_raw.split(":")
+                start_key = int(h) * 60 + int(m)
+            except Exception:
+                time_text = "nincs megadva"
+
         day = r.get("day", r.get("Nap", ""))
         rows.append({
             "Nap": day,
-            "Idő": f"{start}–{end}" if start or end else "nincs megadva",
+            "Idő": time_text,
             "Program": r.get("program_tipus", r.get("program_típus", "")),
-            "Kiszámíthatóság": _clean_predictability_safe(r.get("kiszamithatosag", r.get("kiszámíthatóság", ""))),
+            "Kiszámíthatóság": raw_pred.split("| Idő:", 1)[0].strip(),
             "Környezeti tényezők": r.get("kornyezeti_tenyezok", r.get("környezeti_tényezők", "")),
             "Utazás": f"{r.get('utazas_perc', r.get('utazás_perc', 0))} perc",
             "Átállás": r.get("atallas_szam", r.get("átállás_szám", 0)),
             "Recovery": f"{r.get('recovery_ora', r.get('recovery_óra', 0))} óra",
             "_day": DAYS.index(day) if day in DAYS else 99,
-            "_start": _time_to_minutes(start),
+            "_start": start_key,
         })
+
     out = pd.DataFrame(rows)
+    if out.empty:
+        return out
     return out.sort_values(["_day", "_start"]).drop(columns=["_day", "_start"])
 
 
@@ -1063,10 +1139,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_4_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_5_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_4_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_5_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
