@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.5.1", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.6.1", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -844,7 +844,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.5.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.6.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -1530,7 +1530,7 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_5_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_6_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         
     try:
         insights_df
@@ -1538,41 +1538,32 @@ with tab_export:
         try:
             insights_df = pd.DataFrame(generate_insights(day_summary, profile, events_df, checkins_df))
         except Exception:
-            insights_df = pd.DataFrame()
 
 
     if st.button("PDF riport elkészítése", use_container_width=True):
-
-        # Exporthoz szükséges adatok előkészítése
-        try:
-            day_summary
-        except NameError:
             try:
-                day_summary = build_day_summary(events_df, checkins_df)
-            except Exception:
-                day_summary = pd.DataFrame()
-
-        try:
-            insights_df
-        except NameError:
-            try:
-                insights_df = pd.DataFrame(
-                    generate_insights(day_summary, profile, events_df, checkins_df)
-                )
-            except Exception:
-                insights_df = pd.DataFrame()
-
-
-        try:
-            try:
-                insights_df
-            except NameError:
+                # Export adatok előkészítése
                 try:
-                    insights_df = pd.DataFrame(generate_insights(day_summary, profile, events_df, checkins_df))
-                except Exception:
-                    insights_df = pd.DataFrame()
-            if day_summary is None:
+                    day_summary
+                except NameError:
+                    try:
+                        day_summary = build_day_summary(events_df, checkins_df)
+                    except Exception:
+                        day_summary = pd.DataFrame()
+
+                try:
+                    insights_df
+                except NameError:
+                    try:
+                        insights_df = pd.DataFrame(
+                            generate_insights(day_summary, profile, events_df, checkins_df)
+                        )
+                    except Exception:
+                        insights_df = pd.DataFrame()
+
+                if day_summary is None:
                     day_summary = pd.DataFrame()
+
                 if insights_df is None:
                     insights_df = pd.DataFrame()
 
@@ -1584,12 +1575,20 @@ with tab_export:
                     checkins_df,
                     week_label
                 )
-            if pdf_bytes is not None:
-                st.download_button("⬇️ PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_riport_{week_label}.pdf", mime="application/pdf", use_container_width=True)
-            else:
-                st.info("A PDF export nem érhető el. Ellenőrizd, hogy a reportlab szerepel-e a requirements.txt fájlban.")
-        except Exception as exc:
-            st.error(f"PDF export hiba: {exc}")
+
+                if pdf_bytes is not None:
+                    st.download_button(
+                        "⬇️ PDF riport letöltése",
+                        data=pdf_bytes,
+                        file_name=f"neurodiverz_heti_riport_{week_label}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                else:
+                    st.info("A PDF export nem érhető el. Ellenőrizd a reportlab telepítését.")
+
+            except Exception as exc:
+                st.error(f"PDF export hiba: {exc}")
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
