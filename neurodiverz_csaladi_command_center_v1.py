@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.1.1", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.2.1", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -844,7 +844,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.1.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.2.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -1244,6 +1244,8 @@ with tab_history:
 
 
 def build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label):
+    if insights_df is None:
+        insights_df = pd.DataFrame()
     """Stabil, teljes heti PDF riport: diagram + minden fő stabilitási blokk."""
     if SimpleDocTemplate is None:
         return None
@@ -1404,10 +1406,20 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_1_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-        pdf_bytes = build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_2_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        
+    try:
+        insights_df
+    except NameError:
+        try:
+            insights_df = pd.DataFrame(generate_insights(day_summary, profile, events_df, checkins_df))
+        except Exception:
+            insights_df = pd.DataFrame()
+
+
+    pdf_bytes = build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_5_1_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_5_2_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
