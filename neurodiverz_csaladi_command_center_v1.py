@@ -20,7 +20,7 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.3.6.6.5.4.3", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.6.5.4.3", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -56,7 +56,7 @@ CHALLENGE_PHASE_OPTIONS = ["Nem volt","Program előtt","Program közben","Progra
 CHALLENGE_LOCATION_OPTIONS = ["Nem volt","Otthon","Udvar / játszótér","Óvoda / iskola","Fejlesztés / terápia","Sport","Bolt / ügyintézés","Utazás közben","Családi programon","Ismeretlen / nem egyértelmű"]
 CHALLENGE_TRIGGER_OPTIONS = ["Nem volt","Fáradtság","Éhség / szomjúság","Zaj / sok inger","Sok ember","Váratlan változás","Átállás / indulás","Várakozás","Túl hosszú program","Túl sok elvárás","Testvér / társas konfliktus","Veszteség / kudarc","Nem sikerült megnyugodni","Képernyő lezárása","Nem tudjuk"]
 CHALLENGE_DURATION_OPTIONS = ["Nem volt","0–5 perc","5–15 perc","15–30 perc","30–60 perc","60+ perc","Hullámzó / visszatérő"]
-SETTLE_OPTIONS = ["Nem kellett","Ölelés","Csendes szoba","Takaró alá bújás","Kedvenc zene","Mese / képernyő","Közös kuckózás","Mozgás","Tudatos légzés","Kedvenc tárgy"]
+SETTLE_OPTIONS = ["Nem kellett","Ölelés","Csendes szoba","Takaró alá bújás","Kedvenc zene","Mese / képernyő","Kütyüidő","Közös kuckózás","Mozgás","Tudatos légzés","Kedvenc tárgy"]
 HEALTH_OPTIONS = ["Nincs","Allergia","Megfázás / influenza","Hasfájás","Fejfájás","Gyógyszerváltás","ADHD tünetek erősebbek","Egyéb"]
 
 @st.cache_resource
@@ -701,7 +701,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.3.6.6.5.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.6.5.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -712,7 +712,99 @@ with st.sidebar:
         opts=dict(zip(children["nickname"],children["id"])); name=st.selectbox("Gyermek",list(opts.keys())); selected_child_id=opts[name]
     week_label=st.text_input("Hét azonosító", value=f"{date.today().isocalendar().year}-W{date.today().isocalendar().week:02d}")
 
-tab_profile,tab_plan,tab_checkin,tab_dash,tab_history,tab_export=st.tabs(["1. Gyermekprofil","2. Heti programtervező","3. Napi check-in","4. Stabilitási elemzés","5. Mentett adatok / history","6. Export"])
+
+def _time_to_minutes(value):
+    try:
+        if not value:
+            return 9999
+        h, m = str(value).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 9999
+
+
+def _event_time_text(start_time_value, end_time_value):
+    if start_time_value is None or end_time_value is None:
+        return ""
+    try:
+        return f" | Idő: {start_time_value.strftime('%H:%M')}-{end_time_value.strftime('%H:%M')}"
+    except Exception:
+        return ""
+
+
+def _parse_event_time(row):
+    text = str(row.get("kiszamithatosag", row.get("kiszámíthatóság", "")) or "")
+    if "| Idő:" not in text:
+        return "", ""
+    try:
+        rng = text.split("| Idő:", 1)[1].split("|", 1)[0].strip()
+        if "-" in rng:
+            a, b = rng.split("-", 1)
+            return a.strip(), b.strip()
+    except Exception:
+        pass
+    return "", ""
+
+
+def _clean_predictability(value):
+    text = str(value or "")
+    if "| Idő:" in text:
+        return text.split("| Idő:", 1)[0].strip()
+    return text
+
+
+def build_calendar_view(events_df):
+    if events_df is None or events_df.empty:
+        return pd.DataFrame(columns=["Nap", "Idő", "Program", "Kiszámíthatóság", "Környezeti tényezők", "Utazás", "Átállás", "Recovery"])
+    e = events_df.copy()
+    rows = []
+    for _, r in e.iterrows():
+        start, end = _parse_event_time(r)
+        day = r.get("day", r.get("Nap", ""))
+        rows.append({
+            "Nap": day,
+            "Idő": f"{start}–{end}" if start or end else "nincs megadva",
+            "Program": r.get("program_tipus", r.get("program_típus", "")),
+            "Kiszámíthatóság": _clean_predictability(r.get("kiszamithatosag", r.get("kiszámíthatóság", ""))),
+            "Környezeti tényezők": r.get("kornyezeti_tenyezok", r.get("környezeti_tényezők", "")),
+            "Utazás": f"{r.get('utazas_perc', r.get('utazás_perc', 0))} perc",
+            "Átállás": r.get("atallas_szam", r.get("átállás_szám", 0)),
+            "Recovery": f"{r.get('recovery_ora', r.get('recovery_óra', 0))} óra",
+            "_day": DAYS.index(day) if day in DAYS else 99,
+            "_start": _time_to_minutes(start),
+        })
+    out = pd.DataFrame(rows)
+    return out.sort_values(["_day", "_start"]).drop(columns=["_day", "_start"])
+
+
+def render_calendar_cards(calendar_df):
+    if calendar_df is None or calendar_df.empty:
+        st.info("Még nincs naptárba rendezhető program.")
+        return
+    for day in DAYS:
+        day_df = calendar_df[calendar_df["Nap"] == day]
+        if day_df.empty:
+            continue
+        st.markdown(f"#### {day}")
+        for _, r in day_df.iterrows():
+            st.markdown(
+                f"""
+                <div class="card">
+                    <span class="pill blue">{r['Idő']}</span>
+                    <h3>{r['Program']}</h3>
+                    <div class="small">
+                        <b>Kiszámíthatóság:</b> {r['Kiszámíthatóság']}<br>
+                        <b>Környezeti tényezők:</b> {r['Környezeti tényezők']}<br>
+                        <b>Utazás:</b> {r['Utazás']} · <b>Átállás:</b> {r['Átállás']} · <b>Recovery:</b> {r['Recovery']}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+
+tab_profile,tab_plan,tab_calendar,tab_checkin,tab_dash,tab_history,tab_export=st.tabs(["1. Gyermekprofil","2. Heti programtervező","Strukturált naptár","3. Napi check-in","4. Stabilitási elemzés","5. Mentett adatok / history","6. Export"])
 
 with tab_profile:
     st.subheader("Gyermekprofil")
@@ -762,6 +854,13 @@ with tab_plan:
         c1,c2,c3=st.columns(3)
         with c1:
             day=st.selectbox("Nap",DAYS); program_type=st.selectbox("Program típusa",list(PROGRAM_TYPES.keys()))
+            use_time_range=st.checkbox("Tól–ig időpont megadása", value=False)
+            if use_time_range:
+                start_time_program=st.time_input("Kezdés", value=time(8,0), key="program_start_time")
+                end_time_program=st.time_input("Befejezés", value=time(9,0), key="program_end_time")
+            else:
+                start_time_program=None
+                end_time_program=None
             add_workdays=st.checkbox("Ha óvoda / iskola: tegye be mind az 5 munkanapra")
             duration=st.slider("Időtartam (óra)",0.5,8.0,1.0,step=0.5, help="Mennyi ideig tart maga a program. A hosszabb program nagyobb terhelést adhat.")
         with c2:
@@ -773,8 +872,9 @@ with tab_plan:
         submit=st.form_submit_button("Program mentése felhőbe", use_container_width=True)
     if submit:
         days=WORKDAYS if add_workdays and program_type=="Óvoda / iskola" else [day]
+        time_text=_event_time_text(start_time_program,end_time_program)
         for d in days:
-            payload={"child_id":selected_child_id,"week_label":week_label,"day":d,"program_tipus":program_type,"idotartam_ora":duration,"utazas_perc":travel,"atallas_szam":transitions,"kiszamithatosag":predictability,"kornyezeti_tenyezok":", ".join(envs),"recovery_ora":recovery,"szuloi_terheles":parent_load}
+            payload={"child_id":selected_child_id,"week_label":week_label,"day":d,"program_tipus":program_type,"idotartam_ora":duration,"utazas_perc":travel,"atallas_szam":transitions,"kiszamithatosag":predictability+time_text,"kornyezeti_tenyezok":", ".join(envs),"recovery_ora":recovery,"szuloi_terheles":parent_load}
             payload["terhelesi_pont"]=calculate_event_load(payload,profile); sb.table("weekly_events").insert(payload).execute()
         st.success(f"{len(days)} program mentve."); st.rerun()
     events=load_events(sb,selected_child_id,week_label)
@@ -786,6 +886,20 @@ with tab_plan:
             lab=st.selectbox("Törlendő program",list(labels.keys()))
             if st.button("Kiválasztott program törlése"):
                 sb.table("weekly_events").delete().eq("id",labels[lab]).execute(); st.rerun()
+
+
+with tab_calendar:
+    st.subheader("Strukturált heti naptár")
+    st.caption("A felvitt programokból automatikusan rendezett heti naptár készül. Ha megadsz tól–ig időpontot, időrendben is sorba rendezi.")
+    events_for_calendar = load_events(sb, selected_child_id, week_label)
+    calendar_df = build_calendar_view(events_for_calendar)
+
+    st.markdown("### Táblázatos naptár")
+    st.dataframe(calendar_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Kártyás naptárnézet")
+    render_calendar_cards(calendar_df)
+
 
 with tab_checkin:
     checkins=load_checkins(sb,selected_child_id,week_label)
@@ -875,10 +989,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_3_6_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_3_6_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
