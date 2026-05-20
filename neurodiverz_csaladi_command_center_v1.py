@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.7.1", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.8.1", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -844,7 +844,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.7.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.8.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -1528,35 +1528,44 @@ def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins
 with tab_export:
     st.subheader("Exportok")
 
-    st.info("Itt letölthető a heti riport PDF vagy Excel formában.")
+    st.info("Itt letölthető a heti riport PDF formában.")
+
+    # Fontos: az export saját maga tölti be az adatokat, nem támaszkodik más fülek változóira.
+    export_events_df = load_events(sb, selected_child_id, week_label)
+    export_checkins_df = load_checkins(sb, selected_child_id, week_label)
+
+    try:
+        export_day_summary = build_day_summary(export_events_df, export_checkins_df)
+    except Exception:
+        export_day_summary = pd.DataFrame()
+
+    try:
+        export_insights_df = pd.DataFrame(
+            generate_insights(
+                export_day_summary,
+                profile,
+                export_events_df,
+                export_checkins_df
+            )
+        )
+    except Exception:
+        export_insights_df = pd.DataFrame()
+
+    st.markdown("### Export előnézet")
+    if export_day_summary.empty:
+        st.info("Nincs még elég adat a heti riporthoz.")
+    else:
+        st.dataframe(export_day_summary, use_container_width=True, hide_index=True)
 
     if st.button("PDF riport elkészítése", use_container_width=True):
 
         try:
-            # Biztonságos adat-előkészítés
-            try:
-                day_summary = build_day_summary(events_df, checkins_df)
-            except Exception:
-                day_summary = pd.DataFrame()
-
-            try:
-                insights_df = pd.DataFrame(
-                    generate_insights(
-                        day_summary,
-                        profile,
-                        events_df,
-                        checkins_df
-                    )
-                )
-            except Exception:
-                insights_df = pd.DataFrame()
-
             pdf_bytes = build_safe_pdf_report(
                 profile=profile,
-                events_df=events_df,
-                day_summary=day_summary,
-                insights_df=insights_df,
-                checkins_df=checkins_df,
+                events_df=export_events_df,
+                day_summary=export_day_summary,
+                insights_df=export_insights_df,
+                checkins_df=export_checkins_df,
                 week_label=week_label
             )
 
