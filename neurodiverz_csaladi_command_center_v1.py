@@ -20,7 +20,29 @@ try:
 except Exception:
     SimpleDocTemplate = None
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.3", page_icon="🧩", layout="wide")
+
+def _clean_predictability_safe(value):
+    text = str(value or "")
+    if "| Idő:" in text:
+        return text.split("| Idő:", 1)[0].strip()
+    return text
+
+
+def _parse_event_time_safe_from_text(value):
+    text = str(value or "")
+    if "| Idő:" not in text:
+        return "", ""
+    try:
+        rng = text.split("| Idő:", 1)[1].split("|", 1)[0].strip()
+        if "-" in rng:
+            a, b = rng.split("-", 1)
+            return a.strip(), b.strip()
+    except Exception:
+        pass
+    return "", ""
+
+
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.4", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -701,7 +723,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.3</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.4</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -746,7 +768,7 @@ def _parse_event_time(row):
     return "", ""
 
 
-def _clean_predictability(value):
+def _clean_predictability_safe(value):
     text = str(value or "")
     if "| Idő:" in text:
         return text.split("| Idő:", 1)[0].strip()
@@ -765,7 +787,7 @@ def build_calendar_view(events_df):
             "Nap": day,
             "Idő": f"{start}–{end}" if start or end else "nincs megadva",
             "Program": r.get("program_tipus", r.get("program_típus", "")),
-            "Kiszámíthatóság": _clean_predictability(r.get("kiszamithatosag", r.get("kiszámíthatóság", ""))),
+            "Kiszámíthatóság": _clean_predictability_safe(r.get("kiszamithatosag", r.get("kiszámíthatóság", ""))),
             "Környezeti tényezők": r.get("kornyezeti_tenyezok", r.get("környezeti_tényezők", "")),
             "Utazás": f"{r.get('utazas_perc', r.get('utazás_perc', 0))} perc",
             "Átállás": r.get("atallas_szam", r.get("átállás_szám", 0)),
@@ -1041,10 +1063,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_3_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_4_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_3_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_4_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
