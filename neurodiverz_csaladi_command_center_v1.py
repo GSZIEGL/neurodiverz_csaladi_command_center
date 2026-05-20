@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.3.1", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.4.1", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -765,7 +765,7 @@ def build_neurodiverz_insight_engine(
     }
 
 
-def build_visual_pdf_report(profile, events, summary, insights, checkins, week_label):
+def build_safe_pdf_report(profile, events, summary, insights, checkins, week_label):
     if SimpleDocTemplate is None: return None
     output=io.BytesIO()
     doc=SimpleDocTemplate(output,pagesize=A4,rightMargin=1.2*cm,leftMargin=1.2*cm,topMargin=1.1*cm,bottomMargin=1.1*cm)
@@ -844,7 +844,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.3.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.4.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -1243,7 +1243,7 @@ with tab_history:
     st.markdown("### Check-in history"); st.dataframe(norm_checkins(ac),use_container_width=True,hide_index=True)
 
 
-def build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label):
+def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label):
     if insights_df is None:
         insights_df = pd.DataFrame()
     """Stabil, teljes heti PDF riport: diagram + minden fő stabilitási blokk."""
@@ -1400,13 +1400,137 @@ def build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, c
     return output.getvalue()
 
 
+
+def build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label):
+    """Nagyon stabil PDF export: nem omlik össze, ha egy részblokk hibázik."""
+    if SimpleDocTemplate is None:
+        return None
+
+    if insights_df is None:
+        insights_df = pd.DataFrame()
+
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = []
+
+    def safe_text(x):
+        return str(x or "").replace("ő", "ö").replace("Ő", "Ö").replace("ű", "ü").replace("Ű", "Ü")
+
+    def add_heading(text):
+        story.append(Paragraph(safe_text(text), styles["Heading2"]))
+        story.append(Spacer(1, 6))
+
+    def add_line(text):
+        story.append(Paragraph(safe_text(text), styles["Normal"]))
+        story.append(Spacer(1, 4))
+
+    story.append(Paragraph(safe_text("Neurodiverz családi heti riport"), styles["Title"]))
+    add_line(f"Hét: {week_label}")
+    story.append(Spacer(1, 10))
+
+    add_heading("Heti összegzés")
+    if day_summary is not None and not day_summary.empty:
+        for _, row in day_summary.iterrows():
+            vals = []
+            for col in day_summary.columns[:10]:
+                val = row.get(col, "")
+                if str(val).strip() and str(val) != "nan":
+                    vals.append(f"{col}: {val}")
+            add_line(" | ".join(vals))
+    else:
+        add_line("Nincs elég adat a heti összegzéshez.")
+
+    add_heading("Alap insightok")
+    if insights_df is not None and not insights_df.empty:
+        for _, row in insights_df.iterrows():
+            vals = []
+            for col in insights_df.columns:
+                val = row.get(col, "")
+                if str(val).strip() and str(val) != "nan":
+                    vals.append(f"{col}: {val}")
+            add_line(" | ".join(vals))
+    else:
+        add_line("Még nincs elég insight adat.")
+
+    try:
+        deeper = pd.DataFrame(build_deeper_conclusions(day_summary, profile, events_df, checkins_df))
+        add_heading("Részletesebb heti következtetések")
+        if not deeper.empty:
+            for _, row in deeper.iterrows():
+                vals = [f"{c}: {row.get(c,'')}" for c in deeper.columns if str(row.get(c,'')).strip()]
+                add_line(" | ".join(vals))
+    except Exception as exc:
+        add_line(f"Részletesebb következtetések nem készültek el: {exc}")
+
+    try:
+        pack = build_neurodiverz_insight_engine(day_summary, profile, events_df, checkins_df)
+        for title, key in [
+            ("Heti összkép", "heti_osszkep"),
+            ("Több nap fókuszban", "napi_fokusz"),
+            ("Mintázatok", "mintazatok"),
+            ("Pozitív jelek", "pozitiv_jelek"),
+            ("Mikro-javaslatok", "mikro_javaslatok"),
+        ]:
+            df = pack.get(key, pd.DataFrame())
+            add_heading(title)
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    vals = [f"{c}: {row.get(c,'')}" for c in df.columns if str(row.get(c,'')).strip()]
+                    add_line(" | ".join(vals))
+            else:
+                add_line("Nincs elég adat ehhez a blokkhoz.")
+    except Exception as exc:
+        add_heading("Részletes insight engine")
+        add_line(f"Nem sikerült elkészíteni: {exc}")
+
+    try:
+        prognosis = build_prognosis_engine(day_summary, profile, events_df, checkins_df)
+        add_heading("Prognózis")
+        if prognosis is not None and not prognosis.empty:
+            for _, row in prognosis.iterrows():
+                vals = [f"{c}: {row.get(c,'')}" for c in prognosis.columns if str(row.get(c,'')).strip()]
+                add_line(" | ".join(vals))
+    except Exception as exc:
+        add_heading("Prognózis")
+        add_line(f"Nem sikerült elkészíteni: {exc}")
+
+    try:
+        challenge_df = build_challenge_pattern_table(checkins_df)
+        add_heading("Kihívást jelentő helyzetek")
+        if challenge_df is not None and not challenge_df.empty:
+            for _, row in challenge_df.iterrows():
+                vals = [f"{c}: {row.get(c,'')}" for c in challenge_df.columns if str(row.get(c,'')).strip()]
+                add_line(" | ".join(vals))
+        else:
+            add_line("Nincs rögzített kihívást jelentő helyzet.")
+    except Exception as exc:
+        add_heading("Kihívást jelentő helyzetek")
+        add_line(f"Nem sikerült elkészíteni: {exc}")
+
+    try:
+        points = calculate_reward_points(checkins_df)
+        add_heading("Jutalmazás / matricagyűjtés")
+        add_line(f"Matricák: {points}/7")
+        add_line(f"Szint: {reward_level(points)}")
+        add_line("A jutalom nem a tökéletes viselkedésért jár, hanem azért, mert együtt figyeltétek a hetet.")
+    except Exception:
+        pass
+
+    add_heading("Fontos megjegyzés")
+    add_line("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés, rutin, átállások, alvás/étkezés/képernyő és recovery tudatosabb tervezése.")
+
+    doc.build(story)
+    return output.getvalue()
+
+
 with tab_export:
     events=load_events(sb,selected_child_id,week_label); checkins=load_checkins(sb,selected_child_id,week_label); summary=build_day_summary(events,checkins); insights=pd.DataFrame(generate_insights(summary,profile,events,checkins))
     st.subheader("Export")
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_3_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_4_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         
     try:
         insights_df
@@ -1417,9 +1541,22 @@ with tab_export:
             insights_df = pd.DataFrame()
 
 
-    pdf_bytes = build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label)
-        if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_5_3_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+    if st.button("PDF riport elkészítése", use_container_width=True):
+        try:
+            try:
+                insights_df
+            except NameError:
+                try:
+                    insights_df = pd.DataFrame(generate_insights(day_summary, profile, events_df, checkins_df))
+                except Exception:
+                    insights_df = pd.DataFrame()
+            pdf_bytes = build_safe_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label)
+            if pdf_bytes is not None:
+                st.download_button("⬇️ PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_riport_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            else:
+                st.info("A PDF export nem érhető el. Ellenőrizd, hogy a reportlab szerepel-e a requirements.txt fájlban.")
+        except Exception as exc:
+            st.error(f"PDF export hiba: {exc}")
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
