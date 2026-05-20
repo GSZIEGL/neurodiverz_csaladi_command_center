@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5.1.1", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -844,7 +844,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5.1.1</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -1242,16 +1242,172 @@ with tab_history:
     st.markdown("### Program history"); st.dataframe(norm_events(ae),use_container_width=True,hide_index=True)
     st.markdown("### Check-in history"); st.dataframe(norm_checkins(ac),use_container_width=True,hide_index=True)
 
+
+def build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label):
+    """Stabil, teljes heti PDF riport: diagram + minden fő stabilitási blokk."""
+    if SimpleDocTemplate is None:
+        return None
+
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=1.1*cm,
+        leftMargin=1.1*cm,
+        topMargin=1.0*cm,
+        bottomMargin=1.0*cm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("HU_Title", parent=styles["Title"], fontSize=17, leading=21, spaceAfter=8)
+    h2_style = ParagraphStyle("HU_H2", parent=styles["Heading2"], fontSize=12, leading=15, textColor=colors.HexColor("#1E3A8A"), spaceBefore=8, spaceAfter=5)
+    body_style = ParagraphStyle("HU_Body", parent=styles["Normal"], fontSize=8.4, leading=10.5)
+    small_style = ParagraphStyle("HU_Small", parent=styles["Normal"], fontSize=7.5, leading=9)
+
+    def safe_text(value):
+        if value is None:
+            return ""
+        text = str(value)
+        # ReportLab alapfont biztonság miatt hosszú magyar ékezetek egyszerűsítése
+        return text.replace("ő", "ö").replace("Ő", "Ö").replace("ű", "ü").replace("Ű", "Ü")
+
+    def P(value, style=body_style):
+        return Paragraph(safe_text(value), style)
+
+    def add_df_section(story, title, df, max_rows=10):
+        story.append(P(title, h2_style))
+        if df is None or df.empty:
+            story.append(P("Nincs elég adat ehhez a blokkhoz.", small_style))
+            story.append(Spacer(1, 0.12*cm))
+            return
+
+        for _, row in df.head(max_rows).iterrows():
+            vals = []
+            for col in df.columns:
+                v = row.get(col, "")
+                if pd.notna(v) and str(v).strip():
+                    vals.append(f"<b>{safe_text(col)}:</b> {safe_text(v)}")
+            if vals:
+                story.append(P(" | ".join(vals), small_style))
+                story.append(Spacer(1, 0.07*cm))
+
+    story = []
+    child_name = profile.get("nickname") or profile.get("gyermek_neve") or "Gyermek"
+
+    story.append(P(f"Neurodiverz családi heti riport – {child_name}", title_style))
+    story.append(P(f"Hét: {week_label} · Generálva: {datetime.now().strftime('%Y-%m-%d %H:%M')}", small_style))
+    story.append(Spacer(1, 0.25*cm))
+
+    if day_summary is None or day_summary.empty:
+        story.append(P("Nincs elég adat a heti riporthoz.", body_style))
+        doc.build(story)
+        return output.getvalue()
+
+    weekly_risk_raw = day_summary["Kockázat"].sum() if "Kockázat" in day_summary.columns else 0
+    overload_risk = clamp(weekly_risk_raw / 330 * 100)
+    recovery_sum = day_summary["Recovery_órák"].sum() if "Recovery_órák" in day_summary.columns else 0
+    stability = clamp(100 - overload_risk + recovery_sum * 2)
+    max_day = day_summary.sort_values("Kockázat", ascending=False).iloc[0] if "Kockázat" in day_summary.columns else day_summary.iloc[0]
+    checkin_days = checkins_df["day"].nunique() if checkins_df is not None and not checkins_df.empty and "day" in checkins_df.columns else 0
+
+    summary_data = [
+        [P("Heti stabilitás", small_style), P("Túlterhelési kockázat", small_style), P("Legnehezebb nap", small_style), P("Check-in napok", small_style)],
+        [P(f"{stability}/100", body_style), P(f"{overload_risk}/100", body_style), P(str(max_day.get("Nap", max_day.get("day", ""))), body_style), P(str(checkin_days), body_style)],
+    ]
+    table = Table(summary_data, colWidths=[4.15*cm, 4.15*cm, 4.15*cm, 4.15*cm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1E3A8A")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("BACKGROUND", (0,1), (-1,1), colors.HexColor("#EFF6FF")),
+        ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 5),
+        ("RIGHTPADDING", (0,0), (-1,-1), 5),
+        ("TOPPADDING", (0,0), (-1,-1), 5),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 0.3*cm))
+
+    # Diagram
+    try:
+        story.append(_make_weekly_bar_drawing(day_summary))
+        story.append(Spacer(1, 0.3*cm))
+    except Exception as exc:
+        story.append(P(f"A heti diagram nem volt elkészíthető: {exc}", small_style))
+
+    # Alap insightok
+    add_df_section(story, "Szülőbarát insightok", insights_df, max_rows=8)
+
+    # Részletes következtetések
+    try:
+        deeper = pd.DataFrame(build_deeper_conclusions(day_summary, profile, events_df, checkins_df))
+        add_df_section(story, "Részletesebb heti következtetések", deeper, max_rows=8)
+    except Exception as exc:
+        story.append(P("Részletesebb heti következtetések", h2_style))
+        story.append(P(f"Nem sikerült elkészíteni: {exc}", small_style))
+
+    # Neurodiverz insight engine blokkok
+    try:
+        pack = build_neurodiverz_insight_engine(day_summary, profile, events_df, checkins_df)
+        add_df_section(story, "Heti összkép", pack.get("heti_osszkep", pd.DataFrame()), max_rows=6)
+        add_df_section(story, "Több nap fókuszban", pack.get("napi_fokusz", pd.DataFrame()), max_rows=8)
+        add_df_section(story, "Mintázatok és összefüggések", pack.get("mintazatok", pd.DataFrame()), max_rows=8)
+        add_df_section(story, "Pozitív jelek / ami működni látszik", pack.get("pozitiv_jelek", pd.DataFrame()), max_rows=8)
+        add_df_section(story, "Konkrét mikro-javaslatok", pack.get("mikro_javaslatok", pd.DataFrame()), max_rows=8)
+    except Exception as exc:
+        story.append(P("Neurodiverz insight engine", h2_style))
+        story.append(P(f"Nem sikerült elkészíteni: {exc}", small_style))
+
+    # Prognózis
+    try:
+        prognosis = build_prognosis_engine(day_summary, profile, events_df, checkins_df)
+        add_df_section(story, "Prognózis / mire figyeljetek előre?", prognosis, max_rows=8)
+    except Exception as exc:
+        story.append(P("Prognózis", h2_style))
+        story.append(P(f"Nem sikerült elkészíteni: {exc}", small_style))
+
+    # Kihívást jelentő helyzetek
+    try:
+        challenge_df = build_challenge_pattern_table(checkins_df)
+        add_df_section(story, "Kihívást jelentő helyzetek mintázata", challenge_df, max_rows=10)
+    except Exception as exc:
+        story.append(P("Kihívást jelentő helyzetek", h2_style))
+        story.append(P(f"Nem sikerült elkészíteni: {exc}", small_style))
+
+    # Jutalmazás
+    try:
+        points = calculate_reward_points(checkins_df)
+        reward_df = pd.DataFrame([{
+            "Matricák": f"{points}/7",
+            "Szint": reward_level(points),
+            "Üzenet": "A jutalom nem a tökéletes viselkedésért jár, hanem azért, mert együtt figyeltétek a hetet."
+        }])
+        add_df_section(story, "Jutalmazás / matricagyűjtés", reward_df, max_rows=2)
+    except Exception:
+        pass
+
+    story.append(P("Fontos megjegyzés", h2_style))
+    story.append(P(
+        "Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. "
+        "Célja a családi terhelés, rutin, átállások, alvás/étkezés/képernyő és recovery tudatosabb tervezése.",
+        small_style
+    ))
+
+    doc.build(story)
+    return output.getvalue()
+
+
 with tab_export:
     events=load_events(sb,selected_child_id,week_label); checkins=load_checkins(sb,selected_child_id,week_label); summary=build_day_summary(events,checkins); insights=pd.DataFrame(generate_insights(summary,profile,events,checkins))
     st.subheader("Export")
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-        pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_1_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        pdf_bytes = build_full_visual_pdf_report(profile, events_df, day_summary, insights_df, checkins_df, week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_5_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_5_1_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
