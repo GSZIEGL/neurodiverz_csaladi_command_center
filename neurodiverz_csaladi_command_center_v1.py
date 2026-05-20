@@ -42,7 +42,7 @@ def _parse_event_time_safe_from_text(value):
     return "", ""
 
 
-st.set_page_config(page_title="Neurodiverz Családi Command Center v4.4.5", page_icon="🧩", layout="wide")
+st.set_page_config(page_title="Neurodiverz Családi Command Center v4.5", page_icon="🧩", layout="wide")
 
 st.markdown("""
 <style>
@@ -79,6 +79,23 @@ CHALLENGE_LOCATION_OPTIONS = ["Nem volt","Otthon","Udvar / játszótér","Óvoda
 CHALLENGE_TRIGGER_OPTIONS = ["Nem volt","Fáradtság","Éhség / szomjúság","Zaj / sok inger","Sok ember","Váratlan változás","Átállás / indulás","Várakozás","Túl hosszú program","Túl sok elvárás","Testvér / társas konfliktus","Veszteség / kudarc","Nem sikerült megnyugodni","Képernyő lezárása","Nem tudjuk"]
 CHALLENGE_DURATION_OPTIONS = ["Nem volt","0–5 perc","5–15 perc","15–30 perc","30–60 perc","60+ perc","Hullámzó / visszatérő"]
 SETTLE_OPTIONS = ["Nem kellett","Ölelés","Csendes szoba","Takaró alá bújás","Kedvenc zene","Mese / képernyő","Kütyüidő","Közös kuckózás","Mozgás","Tudatos légzés","Kedvenc tárgy"]
+
+REWARD_OPTIONS = [
+    "1 kocka csoki",
+    "2 szem gumicukor",
+    "Kakaó",
+    "Kedvenc nasi",
+    "Bubifújózás",
+    "Játszótér",
+    "Közös mese",
+    "Társasjáték",
+    "Közös kuckózás",
+    "Séta",
+    "Ő választ esti mesét",
+    "Ő választ zenét",
+    "Ő választ játékot"
+]
+
 HEALTH_OPTIONS = ["Nincs","Allergia","Megfázás / influenza","Hasfájás","Fejfájás","Gyógyszerváltás","ADHD tünetek erősebbek","Egyéb"]
 
 @st.cache_resource
@@ -273,6 +290,25 @@ def normalize_events_df(events_df: pd.DataFrame) -> pd.DataFrame:
     ordered_cols = [c for c in preferred if c in out.columns] + [c for c in out.columns if c not in preferred]
     return out[ordered_cols]
 
+
+
+
+def calculate_reward_points(checkins_df: pd.DataFrame) -> int:
+    if checkins_df is None or checkins_df.empty:
+        return 0
+    if "day" not in checkins_df.columns:
+        return 0
+    return len(checkins_df["day"].dropna().unique())
+
+
+def reward_level(points: int) -> str:
+    if points >= 7:
+        return "Arany hét"
+    if points >= 5:
+        return "Szuper hét"
+    if points >= 3:
+        return "Jó úton"
+    return "Kezdő gyűjtés"
 
 
 def build_day_summary(events_df, checkins_df):
@@ -737,7 +773,31 @@ def build_visual_pdf_report(profile, events, summary, insights, checkins, week_l
     def P(v,style=body): return Paragraph(pdf_safe(v), style)
     story=[P(f"Neurodiverz családi heti riport – {profile.get('nickname','Gyermek')}",title),P(f"Hét: {week_label} · Generálva: {datetime.now().strftime('%Y-%m-%d %H:%M')}",small),Spacer(1,.25*cm)]
     if summary.empty:
-        story.append(P("Nincs elég adat a heti riporthoz.")); doc.build(story); return output.getvalue()
+        story.append(P("Nincs elég adat a heti riporthoz.")); 
+    # Összes stabilitási következtetés exportálása
+    story.append(P("Összes stabilitási következtetés", h2))
+
+    try:
+        insights_df = pd.DataFrame(generate_insights(day_summary, profile, events_df, checkins_df))
+        if insights_df is not None and not insights_df.empty:
+            for _, row in insights_df.iterrows():
+                title = str(row.get("Téma", row.get("Terület", "Következtetés")))
+                text = str(row.get("Következtetés", row.get("Előrejelzés", "")))
+                action = str(row.get("Javaslat", row.get("Megelőző lépés", "")))
+
+                story.append(P(f"<b>{title}</b>", small))
+                if text:
+                    story.append(P(text, small))
+                if action:
+                    story.append(P(f"Javaslat: {action}", small))
+                story.append(Spacer(1, 0.08*cm))
+        else:
+            story.append(P("Még nincs elég adat részletes stabilitási következtetésekhez.", small))
+    except Exception as export_exc:
+        story.append(P(f"Export következtetés-hiba: {export_exc}", small))
+
+
+    doc.build(story); return output.getvalue()
     risk=clamp(summary["Kockázat"].sum()/330*100); stability=clamp(100-risk+summary["Recovery_órák"].sum()*2); maxday=summary.sort_values("Kockázat",ascending=False).iloc[0]; checkdays=checkins["day"].nunique() if not checkins.empty and "day" in checkins else 0
     data=[[P("Heti stabilitás",small),P("Túlterhelési kockázat",small),P("Legnehezebb nap",small),P("Check-in napok",small)],[P(f"{stability}/100"),P(f"{risk}/100"),P(maxday["Nap"]),P(str(checkdays))]]
     t=Table(data,colWidths=[4.2*cm]*4); t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#1E3A8A")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("BACKGROUND",(0,1),(-1,1),colors.HexColor("#EFF6FF")),("GRID",(0,0),(-1,-1),.3,colors.HexColor("#CBD5E1")),("VALIGN",(0,0),(-1,-1),"TOP")]))
@@ -784,7 +844,7 @@ with st.sidebar:
     st.write(f"Belépve: **{user['email']}**")
     if st.button("Kijelentkezés", use_container_width=True): logout()
 
-st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.4.5</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="hero-title">🧩 Neurodiverz Családi Command Center v4.5</div><div class="hero-sub">Felhőalapú, többfelhasználós stabilitástervező. Belépés után bárhonnan elérhető, és több hét adataiból kezd mintázatokat mutatni.</div></div>', unsafe_allow_html=True)
 
 children=load_children(sb)
 with st.sidebar:
@@ -902,7 +962,7 @@ def render_calendar_cards(calendar_df):
 
 
 
-tab_profile,tab_plan,tab_calendar,tab_checkin,tab_dash,tab_history,tab_export=st.tabs(["1. Gyermekprofil","2. Heti programtervező","Strukturált naptár","3. Napi check-in","4. Stabilitási elemzés","5. Mentett adatok / history","6. Export"])
+tab_profile,tab_plan,tab_calendar,tab_checkin,tab_rewards,tab_dash,tab_history,tab_export=st.tabs(["1. Gyermekprofil","2. Heti programtervező","Strukturált naptár","3. Napi check-in","Jutalmazás","4. Stabilitási elemzés","5. Mentett adatok / history","6. Export"])
 
 with tab_profile:
     st.subheader("Gyermekprofil")
@@ -1095,6 +1155,55 @@ with tab_checkin:
                 st.success(f"Tisztítás kész. Törölt régi duplikátumok: {deleted_count}.")
                 st.rerun()
 
+
+with tab_rewards:
+    st.subheader("Jutalmazás és matricagyűjtés")
+    st.caption("A cél nem a tökéletes viselkedés, hanem hogy együtt figyeljük és jobban értsük a hetet.")
+
+    rewards_checkins = load_checkins(sb, selected_child_id, week_label)
+    points = calculate_reward_points(rewards_checkins)
+
+    st.metric("Összegyűjtött matricák", f"{points} / 7")
+    st.success(f"Szint: {reward_level(points)}")
+
+    cols = st.columns(7)
+    for i in range(7):
+        with cols[i]:
+            if i < points:
+                st.markdown("⭐")
+            else:
+                st.markdown("⬜")
+
+    st.markdown("### Választható jutalmak")
+
+    selected_rewards = st.multiselect(
+        "Mik motiválják most legjobban?",
+        REWARD_OPTIONS
+    )
+
+    custom_reward = st.text_input(
+        "Saját jutalom ötlet",
+        placeholder="pl. új matrica, kis Lego, közös fagyizás"
+    )
+
+    if points >= 3:
+        st.info("3 matrica után már érdemes egy kisebb jutalmat adni.")
+    if points >= 5:
+        st.success("5 matrica = erős hét. Jöhet egy nagyobb közös élmény.")
+    if points >= 7:
+        st.balloons()
+        st.success("Teljes hét végigkövetve! Ez hatalmas segítség a mintázatok felismerésében.")
+
+    if selected_rewards:
+        st.markdown("### Aktuális jutalomötletek")
+        for r in selected_rewards:
+            st.markdown(f"- {r}")
+
+    if custom_reward.strip():
+        st.markdown("### Saját jutalom")
+        st.markdown(f"- {custom_reward}")
+
+
 with tab_dash:
     events=load_events(sb,selected_child_id,week_label); checkins=load_checkins(sb,selected_child_id,week_label)
     summary=build_day_summary(events,checkins); insights=pd.DataFrame(generate_insights(summary,profile,events,checkins))
@@ -1139,10 +1248,10 @@ with tab_export:
     if summary.empty: st.info("Nincs exportálható heti elemzés.")
     else:
         st.dataframe(summary,use_container_width=True,hide_index=True); st.dataframe(insights,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_4_5_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("⬇️ Excel riport letöltése", data=export_excel(profile,events,summary,insights,checkins), file_name=f"neurodiverz_csaladi_command_center_v4_5_3_6_5_4_{week_label}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         pdf_bytes=build_visual_pdf_report(profile,events,summary,insights,checkins,week_label)
         if pdf_bytes is not None:
-            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_4_5_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("⬇️ Vizuális heti PDF riport letöltése", data=pdf_bytes, file_name=f"neurodiverz_heti_vizualis_riport_v4_5_3_6_5_4_{week_label}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.info("PDF exporthoz a requirements.txt fájlban szerepelnie kell: reportlab és matplotlib")
     st.info("Ez az eszköz nem diagnosztikai vagy egészségügyi rendszer. Célja a családi terhelés és mintázatok tudatosabb követése.")
